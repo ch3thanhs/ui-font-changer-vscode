@@ -1,0 +1,70 @@
+{
+  "name": "ui-font-changer-for-vscode",
+  "displayName": "UI Font Changer for VS Code",
+  "description": "An extension to change the UI font of VS Code",
+  "license": "Unlicense",
+  "icon": "images/icon.png",
+  "keywords": [
+    "font changer",
+    "UI font changer",
+    "custom font",
+    "workbench font",
+    "change font",
+    "UI font"
+  ],
+  "publisher": "ch3thanhs",
+  "author": "Chethan",
+  "version": "1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ch3thanhs/ui-font-changer-vscode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ch3thanhs/ui-font-changer-vscode/issues"
+  },
+  "homepage": "https://github.com/ch3thanhs/ui-font-changer-vscode#readme",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "ui-font-changer-for-vscode.change",
+        "title": "Change UI font"
+      },
+      {
+        "command": "ui-font-changer-for-vscode.restore",
+        "title": "Restore UI font"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "check:vscode-font-tokens": "node ./scripts/check-vscode-font-tokens.mjs",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^18.19.130",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.1",
+    "@typescript-eslint/parser": "^6.13.1",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.3.8",
+    "eslint": "^8.54.0",
+    "typescript": "^5.3.2"
+  },
+  "overrides": {
+    "serialize-javascript": "^7.0.5",
+    "diff": "^8.0.3"
+  }
+}
