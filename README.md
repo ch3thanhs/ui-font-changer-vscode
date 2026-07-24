@@ -5,6 +5,8 @@ UI Font Changer for VS Code lets you change the VS Code UI font.
 
 It updates the workbench UI, Agents window, and Markdown preview so they use the font you pick.
 
+[![VS Code Marketplace](https://img.shields.io/badge/VS_Code_Marketplace-Get_It_Now-007ACC?style=for-the-badge&logo=visual-studio-code&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=ch3thanhs.ui-font-changer-for-vscode)
+
 ## Quick Start
 
 1. Install the extension.
