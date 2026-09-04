@@ -213,33 +213,68 @@ function isPermissionError(error: unknown): boolean {
     return !!error
         && typeof error === 'object'
         && 'code' in error
-        && (error.code === 'EACCES' || error.code === 'EPERM');
+        && (error.code === 'EACCES' || error.code === 'EPERM' || error.code === 'EROFS');
+}
+
+export function getElevationHint(platform: string = process.platform): string {
+    if (platform === WINDOWS_PLATFORM) {
+        return 'The VS Code installation folder is protected. Close VS Code, right-click its shortcut, choose "Run as administrator", and run the command again.';
+    }
+
+    if (platform === MACOS_PLATFORM) {
+        return 'The VS Code installation folder is not writable by your user account. Grant yourself write access (for example: sudo chown -R "$(whoami)" "/Applications/Visual Studio Code.app") and run the command again.';
+    }
+
+    return 'The VS Code installation folder is not writable by your user account. Grant yourself write access to the installation directory (for example: sudo chown -R "$(whoami)" /usr/share/code) and run the command again.';
 }
 
 function ensureDirectoryWritable(dirPath: string, purpose: string): void {
+    let probeHandle: number | undefined;
+    // fs.accessSync(W_OK) only reflects the read-only attribute on Windows and ignores ACLs,
+    // so probe with a real file creation to catch protected locations like C:\Program Files.
+    const probePath = path.join(dirPath, `.ui-font-changer-for-vscode-probe-${process.pid}-${Date.now()}`);
+
     try {
         fs.mkdirSync(dirPath, { recursive: true });
-        fs.accessSync(dirPath, fs.constants.R_OK | fs.constants.W_OK);
-    } catch (error) {
-        if (isPermissionError(error)) {
-            throw new FileAccessError(`UI Font Changer for VS Code could not access ${purpose}. Check permissions for ${dirPath}.`);
-        }
-
-        throw error;
-    }
-}
-
-function ensureFileReadableWritable(filePath: string, purpose: string): void {
-    try {
-        fs.accessSync(filePath, fs.constants.R_OK | fs.constants.W_OK);
+        probeHandle = fs.openSync(probePath, 'wx');
     } catch (error) {
         if (isPermissionError(error)) {
             throw new FileAccessError(
-                `UI Font Changer for VS Code could not access ${purpose} (${describePathForUser(filePath)}). Run VS Code with permission to modify installation files.`,
+                `UI Font Changer for VS Code could not write to ${purpose}. ${getElevationHint()}`,
             );
         }
 
         throw error;
+    } finally {
+        if (probeHandle !== undefined) {
+            fs.closeSync(probeHandle);
+            try {
+                fs.unlinkSync(probePath);
+            } catch {
+                // Leftover probe files are harmless; never fail the command over cleanup.
+            }
+        }
+    }
+}
+
+function ensureFileReadableWritable(filePath: string, purpose: string): void {
+    let handle: number | undefined;
+
+    try {
+        // Opening for read/write is the only reliable write check on Windows.
+        handle = fs.openSync(filePath, 'r+');
+    } catch (error) {
+        if (isPermissionError(error)) {
+            throw new FileAccessError(
+                `UI Font Changer for VS Code could not modify ${purpose} (${describePathForUser(filePath)}). ${getElevationHint()}`,
+            );
+        }
+
+        throw error;
+    } finally {
+        if (handle !== undefined) {
+            fs.closeSync(handle);
+        }
     }
 }
 
@@ -278,6 +313,10 @@ function toUserFacingErrorMessage(error: unknown): string {
 
     if (error instanceof FileAccessError) {
         return error.message;
+    }
+
+    if (isPermissionError(error)) {
+        return `UI Font Changer for VS Code could not modify the VS Code installation files. ${getElevationHint()}`;
     }
 
     if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {

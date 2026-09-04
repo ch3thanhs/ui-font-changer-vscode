@@ -7,6 +7,7 @@ import {
     DEFAULT_FONTS_TO_REPLACE,
     buildMarkdownRule,
     getDefaultFontsToReplaceForPlatform,
+    getElevationHint,
     getTargetFiles,
     isBackupMetadataCurrent,
     LINUX_FONTS_TO_REPLACE,
@@ -175,6 +176,34 @@ suite('installed font parsing', () => {
             'JetBrains Mono',
             'JetBrains Mono Medium',
         ]);
+    });
+});
+
+suite('getElevationHint', () => {
+    test('tells Windows users to relaunch as administrator', () => {
+        const hint = getElevationHint('win32');
+        assert.ok(hint.includes('Run as administrator'), 'Windows hint should mention running as administrator');
+        assert.ok(!hint.includes('sudo'), 'Windows hint should not suggest sudo');
+    });
+
+    test('tells macOS users to take ownership of the app bundle', () => {
+        const hint = getElevationHint('darwin');
+        assert.ok(hint.includes('sudo chown'), 'macOS hint should suggest chown');
+        assert.ok(hint.includes('Visual Studio Code.app'), 'macOS hint should reference the app bundle');
+    });
+
+    test('tells Linux users to take ownership of the install directory', () => {
+        const hint = getElevationHint('linux');
+        assert.ok(hint.includes('sudo chown'), 'Linux hint should suggest chown');
+        assert.ok(hint.includes('/usr/share/code'), 'Linux hint should reference the install directory');
+    });
+
+    test('falls back to the generic non-Windows hint for unknown platforms', () => {
+        assert.strictEqual(getElevationHint('freebsd'), getElevationHint('linux'));
+    });
+
+    test('defaults to the current platform when no argument is supplied', () => {
+        assert.strictEqual(getElevationHint(), getElevationHint(process.platform));
     });
 });
 
