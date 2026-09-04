@@ -10,11 +10,16 @@
     "custom font",
     "workbench font",
     "change font",
-    "UI font"
+    "UI font",
+    "vscode font",
+    "vscode UI font",
+    "vscode UI font changer",
+    "vscode UI font changer extension",
+    "vscode font changer"
   ],
   "publisher": "ch3thanhs",
   "author": "Chethan",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "repository": {
     "type": "git",
     "url": "https://github.com/ch3thanhs/ui-font-changer-vscode.git"
