@@ -37,12 +37,25 @@ const TARGETS = [
 ];
 
 const TOKENS_BY_PLATFORM = {
-  win32: ['Segoe UI', 'Segoe WPC', 'Segoe'],
+  win32: ['Segoe UI', 'Segoe WPC'],
   darwin: ['BlinkMacSystemFont', '-apple-system'],
   linux: ['Droid Sans', 'Ubuntu', 'system-ui'],
 };
 
 const SKIPPED_DISCOVERY_DIRECTORIES = new Set(['extensions', 'user-data']);
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function countCompleteFontFamilyMatches(content, fontName) {
+  const escapedName = escapeRegExp(fontName);
+  const pattern = new RegExp(
+    `(["'])${escapedName}\\1|(?:^|[,:;([{="']\\s*)${escapedName}(?=\\s*(?:[,;)}\\]"']|!important\\b|$))`,
+    'gm',
+  );
+  return [...content.matchAll(pattern)].length;
+}
 
 function isVsCodeAppRoot(directory) {
   return path.basename(directory) === 'app'
@@ -134,16 +147,19 @@ function main() {
     }
 
     const content = fs.readFileSync(targetPath, 'utf-8');
-    const foundTokens = tokens.filter(token => content.includes(token));
-    if (foundTokens.length === 0) {
-      console.error(
-        `[bundle-guard] ERROR: ${target.name} contains none of the expected tokens: ${tokens.join(', ')}`,
-      );
+    const matchCounts = Object.fromEntries(tokens.map(token => [
+      token,
+      countCompleteFontFamilyMatches(content, token),
+    ]));
+    const missingTokens = tokens.filter(token => matchCounts[token] === 0);
+    if (missingTokens.length > 0) {
+      console.error(`[bundle-guard] ERROR: ${target.name} is missing complete family entries: ${missingTokens.join(', ')}`);
       failed = true;
       continue;
     }
 
-    console.log(`[bundle-guard] PASS: ${target.name} contains ${foundTokens.join(', ')}`);
+    const summary = tokens.map(token => `${token}=${matchCounts[token]}`).join(', ');
+    console.log(`[bundle-guard] PASS: ${target.name} complete family matches: ${summary}`);
   }
 
   if (failed) {

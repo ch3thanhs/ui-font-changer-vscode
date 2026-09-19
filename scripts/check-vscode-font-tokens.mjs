@@ -1,19 +1,21 @@
 #!/usr/bin/env node
 
-const FILES = [
-  'src/vs/workbench/browser/media/style.css',
-  'src/vs/editor/standalone/browser/standalone-tokens.css',
-  'src/vs/workbench/contrib/issue/browser/media/issueReporter.css',
-  'src/vs/workbench/contrib/issue/browser/media/issueReporterOverlay.css',
-];
-
-const REQUIRED_TOKENS = {
-  windows: ['Segoe WPC', 'Segoe UI'],
-  macos: ['-apple-system', 'BlinkMacSystemFont'],
-  linux: ['system-ui', 'Ubuntu', 'Droid Sans'],
+const DEFAULT_VSCODE_REF = '1.85.0';
+const VSCODE_REF = process.argv[2] ?? process.env.VSCODE_SOURCE_REF ?? DEFAULT_VSCODE_REF;
+const EXPECTATIONS_BY_FILE = {
+  'src/vs/workbench/browser/media/style.css': {
+    windows: ['"Segoe WPC"', '"Segoe UI"'],
+    macos: ['-apple-system', 'BlinkMacSystemFont'],
+    linux: ['system-ui', '"Ubuntu"', '"Droid Sans"'],
+  },
+  'src/vs/editor/standalone/browser/standalone-tokens.css': {
+    windows: ['"Segoe WPC"', '"Segoe UI"'],
+    macos: ['-apple-system', 'BlinkMacSystemFont'],
+    linux: ['system-ui', '"Ubuntu"', '"Droid Sans"'],
+  },
 };
 
-const BASE_RAW_URL = 'https://raw.githubusercontent.com/microsoft/vscode/main';
+const BASE_RAW_URL = `https://raw.githubusercontent.com/microsoft/vscode/${encodeURIComponent(VSCODE_REF)}`;
 
 async function fetchFile(path) {
   const url = `${BASE_RAW_URL}/${path}`;
@@ -31,44 +33,24 @@ async function fetchFile(path) {
   return response.text();
 }
 
-function findMissingTokens(contentByPath) {
-  const allContent = Object.values(contentByPath).join('\n');
-  const missingByPlatform = {};
-
-  for (const [platform, tokens] of Object.entries(REQUIRED_TOKENS)) {
-    const missing = tokens.filter(token => !allContent.includes(token));
-    if (missing.length > 0) {
-      missingByPlatform[platform] = missing;
-    }
-  }
-
-  return missingByPlatform;
-}
-
-function printFoundSummary(contentByPath) {
-  for (const [platform, tokens] of Object.entries(REQUIRED_TOKENS)) {
-    const found = tokens.filter(token =>
-      Object.values(contentByPath).some(content => content.includes(token)),
-    );
-    console.log(`[guard] ${platform}: found ${found.length}/${tokens.length} tokens`);
-  }
-}
-
 async function main() {
-  const contentByPath = {};
+  let failed = false;
+  console.log(`[guard] VS Code source ref: ${VSCODE_REF}`);
 
-  for (const path of FILES) {
-    contentByPath[path] = await fetchFile(path);
+  for (const [path, expectations] of Object.entries(EXPECTATIONS_BY_FILE)) {
+    const content = await fetchFile(path);
+    for (const [platform, tokens] of Object.entries(expectations)) {
+      const missing = tokens.filter(token => !content.includes(token));
+      if (missing.length > 0) {
+        console.error(`[guard] ERROR: ${path} (${platform}) is missing: ${missing.join(', ')}`);
+        failed = true;
+      } else {
+        console.log(`[guard] PASS: ${path} (${platform}) contains all ${tokens.length} tokens`);
+      }
+    }
   }
 
-  printFoundSummary(contentByPath);
-
-  const missingByPlatform = findMissingTokens(contentByPath);
-  if (Object.keys(missingByPlatform).length > 0) {
-    console.error('[guard] VS Code token compatibility check failed. Missing tokens:');
-    for (const [platform, missing] of Object.entries(missingByPlatform)) {
-      console.error(`  - ${platform}: ${missing.join(', ')}`);
-    }
+  if (failed) {
     process.exit(1);
   }
 

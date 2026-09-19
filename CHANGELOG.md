@@ -4,6 +4,29 @@ All notable changes to the "UI Font Changer for VS Code" extension will be docum
 
 This project loosely follows [Keep a Changelog](http://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
 
+## [1.0.4] - 2026-09-19
+
+### Added
+
+- Add SHA-256 backup manifests that detect missing or modified backup files before applying or restoring a font.
+- Add compatibility testing for the minimum supported VS Code release, an intermediate release, latest stable, and scheduled Insiders builds.
+- Add a security policy with private vulnerability-reporting guidance.
+
+### Changed
+
+- Move font utilities, asynchronous patching and backup management, and operation serialization into dedicated modules.
+- Use promise-based filesystem operations throughout production code to avoid blocking the extension host during bundle updates.
+- Serialize change, reapply, and restore operations and use unique temporary filenames for atomic writes.
+- Pin VS Code source compatibility checks, validate expected tokens per source file, and require complete font-family matches in compiled bundles.
+- Pin the VSIX packager and GitHub Actions dependencies for reproducible release builds.
+- Run CI for both `main` and `dev` and enforce zero-warning ESLint and stricter TypeScript checks.
+
+### Fixed
+
+- Preserve longer Windows font families such as `Segoe UI Variable`, `Segoe UI Emoji`, and `Segoe Fluent Icons` during replacement.
+- Refuse to reconstruct a missing pristine backup from a potentially patched live VS Code file.
+- Preserve deterministic repeated font changes and byte-for-byte restoration across all supported UI surfaces.
+
 ## [1.0.3] - 2026-09-19
 
 ### Added
