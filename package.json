@@ -19,7 +19,7 @@
   ],
   "publisher": "ch3thanhs",
   "author": "Chethan",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "repository": {
     "type": "git",
     "url": "https://github.com/ch3thanhs/ui-font-changer-vscode.git"
@@ -34,23 +34,35 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "ui-font-changer-for-vscode.change",
-        "title": "Change UI font"
+        "title": "Change Font",
+        "category": "UI Font Changer"
+      },
+      {
+        "command": "ui-font-changer-for-vscode.reapply",
+        "title": "Reapply Font",
+        "category": "UI Font Changer"
       },
       {
         "command": "ui-font-changer-for-vscode.restore",
-        "title": "Restore UI font"
+        "title": "Restore Default Font",
+        "category": "UI Font Changer"
       }
     ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "check:vscode-font-tokens": "node ./scripts/check-vscode-font-tokens.mjs",
+    "check:vscode-font-tokens": "npm run check:vscode-source-font-tokens",
+    "check:vscode-source-font-tokens": "node ./scripts/check-vscode-font-tokens.mjs",
+    "check:vscode-bundles": "node ./scripts/check-vscode-bundles.mjs",
+    "check:release-version": "node ./scripts/check-release-version.mjs",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
@@ -64,7 +76,7 @@
     "@typescript-eslint/eslint-plugin": "^6.13.1",
     "@typescript-eslint/parser": "^6.13.1",
     "@vscode/test-cli": "^0.0.15",
-    "@vscode/test-electron": "^2.3.8",
+    "@vscode/test-electron": "^3.1.0",
     "eslint": "^8.54.0",
     "typescript": "^5.3.2"
   },

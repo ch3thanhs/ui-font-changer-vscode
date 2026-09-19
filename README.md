@@ -29,8 +29,10 @@ Choose any font installed on your system, apply it with a command, and restart V
 ## ✨ Features
 
 * Change the VS Code UI font with a single command
+* Start setup from a one-time welcome notification after installation
+* Reapply the selected font after a VS Code update
 * Restore the default UI font at any time
-* Supports the Workbench UI, Chat/Agent windows, and Markdown Preview
+* Supports the Workbench UI, Chat/Agent windows, and Markdown Preview when those surfaces are available in the installed VS Code build
 * No manual file editing required
 
 ---
@@ -40,21 +42,30 @@ Choose any font installed on your system, apply it with a command, and restart V
 ### Change the UI Font
 
 1. Install the extension.
-2. Open the **Command Palette**:
+2. Start setup using either option:
 
-   * **Windows/Linux:** `Ctrl + Shift + P`
-   * **macOS:** `⌘ + Shift + P`
-3. Run **Change UI font**.
-4. Select a font from the list or enter one manually.
-5. Restart VS Code.
+  * Select **Choose Font** in the welcome notification.
+  * Open the **Command Palette** and run **UI Font Changer: Change Font**.
+
+    * **Windows/Linux:** `Ctrl + Shift + P`
+    * **macOS:** `⌘ + Shift + P`
+
+3. Select a font from the list or enter one manually.
+4. Restart VS Code.
 
 > [!NOTE]
 > The selected font must already be installed on your operating system.
 
+### Reapply the UI Font After an Update
+
+1. Open the **Command Palette**.
+2. Run **UI Font Changer: Reapply Font**.
+3. Restart VS Code.
+
 ### Restore the Default Font
 
 1. Open the **Command Palette**.
-2. Run **Restore UI font**.
+2. Run **UI Font Changer: Restore Default Font**.
 3. Restart VS Code.
 
 ---
@@ -64,6 +75,7 @@ Choose any font installed on your system, apply it with a command, and restart V
 * VS Code **1.85.0** or later
 * The desired font installed on your system
 * Permission to modify the VS Code installation directory
+* A local desktop installation of VS Code; browser clients such as `vscode.dev` are not supported
 
 ---
 
@@ -80,27 +92,52 @@ Choose any font installed on your system, apply it with a command, and restart V
 > This is expected because the extension patches internal VS Code files.
 
 > [!NOTE]
-> Updating VS Code restores the original files. If your custom font disappears after an update, simply run **Change UI font** again and restart VS Code.
+> Updating VS Code restores the original files. If your custom font disappears after an update, run **UI Font Changer: Reapply Font** and restart VS Code.
 
 > [!NOTE]
 > Windows is the primary supported platform. macOS and Linux are supported on a best-effort basis.
+
+> [!CAUTION]
+> Before uninstalling the extension, run **UI Font Changer: Restore Default Font** and restart VS Code. Uninstalling the extension alone does not restore files that were already modified.
+
+### Permission Recovery
+
+If the extension reports that the VS Code installation directory is protected:
+
+* **Windows:** Close VS Code, right-click its shortcut, select **Run as administrator**, and run the command again.
+* **macOS:** Grant your account write access to the application bundle, then run the command again:
+
+  ```bash
+  sudo chown -R "$(whoami)" "/Applications/Visual Studio Code.app"
+  ```
+
+* **Linux:** Grant your account write access to the installation directory, adjusting the path if VS Code is installed elsewhere:
+
+  ```bash
+  sudo chown -R "$(whoami)" /usr/share/code
+  ```
+
+Some VS Code releases do not contain every supported UI bundle. The extension reports each surface as updated, partially updated, or unavailable instead of silently claiming full coverage.
 
 ---
 
 ## 📖 Commands
 
-| Command                              | Description                 |
-| ------------------------------------ | --------------------------- |
-| `ui-font-changer-for-vscode.change`  | Change the VS Code UI font  |
-| `ui-font-changer-for-vscode.restore` | Restore the default UI font |
+| Command Palette title                    | Command ID                           | Description                 |
+| ---------------------------------------- | ------------------------------------ | --------------------------- |
+| UI Font Changer: Change Font             | `ui-font-changer-for-vscode.change`  | Change the VS Code UI font  |
+| UI Font Changer: Reapply Font            | `ui-font-changer-for-vscode.reapply` | Reapply the selected font   |
+| UI Font Changer: Restore Default Font    | `ui-font-changer-for-vscode.restore` | Restore the default UI font |
 
 ---
 
 ## 🛠️ Build from Source
 
 ```bash
-npm install
-npm run compile
+npm ci
+npm run check:vscode-font-tokens
+npm test
+npm run check:vscode-bundles
 npx @vscode/vsce package
 ```
 
