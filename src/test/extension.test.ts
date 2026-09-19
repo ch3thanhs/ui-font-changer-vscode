@@ -4,37 +4,41 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
+import { shouldShowWelcomeNotification } from '../extension';
 import {
-    applyWritesTransactionally,
-    type BackupFiles,
-    type BackupMetadata,
     containsTargetFontReferences,
     DEFAULT_FONTS_TO_REPLACE,
     buildMarkdownRule,
     detectPatchedMarkdownFont,
     FONT_ENUMERATION_TIMEOUT_MS,
     getDefaultFontsToReplaceForPlatform,
-    getElevationHint,
     getFontNameValidationError,
     getInstalledFonts,
-    getTargetFiles,
-    hasRestorableBackupSet,
     isInstalledFont,
-    isBackupMetadataCurrent,
     LINUX_FONTS_TO_REPLACE,
     MACOS_FONTS_TO_REPLACE,
     normalizeFontFamilyName,
     normalizeCustomFontName,
     parseInstalledFontList,
+    prioritizeFontNames,
+    replaceFontInContent,
+} from '../font-utils';
+import { createOperationQueue } from '../operation-queue';
+import {
+    applyWritesTransactionally,
+    type BackupFiles,
+    type BackupMetadata,
+    finalizeBackupSet,
+    getElevationHint,
+    getTargetFiles,
+    hasRestorableBackupSet,
+    isBackupMetadataCurrent,
     planFontPatchWrites,
     planMarkdownPatchWrite,
     planRestoreWrites,
     prepareBackupSet,
-    prioritizeFontNames,
-    replaceFontInContent,
-    shouldShowWelcomeNotification,
     summarizeSurfaceUpdates,
-} from '../extension';
+} from '../patcher';
 
 suite('replaceFontInContent', () => {
     test('replaces all three default Segoe variants', () => {
@@ -44,16 +48,30 @@ suite('replaceFontInContent', () => {
     });
 
     test('replaces every occurrence (global flag)', () => {
-        const input = 'Segoe UI Segoe UI Segoe UI';
+        const input = 'Segoe UI, Segoe UI, Segoe UI';
         const out = replaceFontInContent(input, 'Inter');
-        assert.strictEqual(out, 'Inter Inter Inter');
+        assert.strictEqual(out, 'Inter, Inter, Inter');
     });
 
     test('"Segoe UI" is replaced before bare "Segoe" (no partial collisions)', () => {
         // If 'Segoe' were processed first, 'Segoe UI' would become 'Inter UI'.
-        const input = 'Segoe UI and Segoe alone';
+        const input = 'font-family: Segoe UI, Segoe;';
         const out = replaceFontInContent(input, 'Inter');
-        assert.strictEqual(out, 'Inter and Inter alone');
+        assert.strictEqual(out, 'font-family: Inter, Inter;');
+    });
+
+    test('does not replace target names inside longer font family names', () => {
+        const input = '"Segoe UI Variable", "Segoe UI Emoji", "Segoe Fluent Icons"';
+        const out = replaceFontInContent(input, 'Inter');
+
+        assert.strictEqual(out, input);
+    });
+
+    test('replaces exact family entries beside longer related family names', () => {
+        const input = '"Segoe UI Variable", "Segoe UI", Segoe, sans-serif';
+        const out = replaceFontInContent(input, 'Inter');
+
+        assert.strictEqual(out, '"Segoe UI Variable", "Inter", Inter, sans-serif');
     });
 
     test('returns content unchanged when no target font is present', () => {
@@ -86,9 +104,9 @@ suite('replaceFontInContent', () => {
 
     test('escapes regex metacharacters in names being replaced', () => {
         // If we ever feed in a font name with regex characters, it shouldn't blow up.
-        const input = 'foo.bar baz';
+        const input = 'font-family: foo.bar, baz;';
         const out = replaceFontInContent(input, 'X', ['foo.bar']);
-        assert.strictEqual(out, 'X baz');
+        assert.strictEqual(out, 'font-family: X, baz;');
     });
 
     test('escapes quotes and backslashes inside quoted replacements', () => {
@@ -108,9 +126,9 @@ suite('replaceFontInContent', () => {
     });
 
     test('uses longest-first matching regardless of custom target order', () => {
-        const out = replaceFontInContent('Segoe UI and Segoe', 'Inter', ['Segoe', 'Segoe UI']);
+        const out = replaceFontInContent('font-family: Segoe UI, Segoe;', 'Inter', ['Segoe', 'Segoe UI']);
 
-        assert.strictEqual(out, 'Inter and Inter');
+        assert.strictEqual(out, 'font-family: Inter, Inter;');
     });
 
     test('returns content unchanged when the target list is empty', () => {
@@ -197,16 +215,16 @@ suite('transactional writes', () => {
         fs.rmSync(tempRoot, { recursive: true, force: true });
     });
 
-    test('restores every target when a writer fails after modifying the current file', () => {
+    test('restores every target when a writer fails after modifying the current file', async () => {
         const firstPath = path.join(tempRoot, 'first.css');
         const secondPath = path.join(tempRoot, 'second.css');
         fs.writeFileSync(firstPath, 'first original');
         fs.writeFileSync(secondPath, 'second original');
 
-        assert.throws(() => applyWritesTransactionally([
+        await assert.rejects(applyWritesTransactionally([
             { targetPath: firstPath, content: 'first updated' },
             { targetPath: secondPath, content: 'second updated' },
-        ], (filePath, content) => {
+        ], async (filePath, content) => {
             fs.writeFileSync(filePath, content);
             if (filePath === secondPath) {
                 throw new Error('simulated write failure');
@@ -218,11 +236,48 @@ suite('transactional writes', () => {
     });
 });
 
+suite('operation queue', () => {
+    test('runs operations sequentially in invocation order', async () => {
+        const runOperation = createOperationQueue();
+        const events: string[] = [];
+        let releaseFirst!: () => void;
+        const firstCanFinish = new Promise<void>(resolve => {
+            releaseFirst = resolve;
+        });
+
+        const first = runOperation(async () => {
+            events.push('first started');
+            await firstCanFinish;
+            events.push('first finished');
+        });
+        const second = runOperation(async () => {
+            events.push('second started');
+        });
+
+        await Promise.resolve();
+        assert.deepStrictEqual(events, ['first started']);
+        releaseFirst();
+        await Promise.all([first, second]);
+        assert.deepStrictEqual(events, ['first started', 'first finished', 'second started']);
+    });
+
+    test('continues with later operations after a failure', async () => {
+        const runOperation = createOperationQueue();
+        const failed = runOperation(async () => {
+            throw new Error('simulated failure');
+        });
+        const recovered = runOperation(async () => 'recovered');
+
+        await assert.rejects(failed, /simulated failure/);
+        assert.strictEqual(await recovered, 'recovered');
+    });
+});
+
 suite('backup and restore filesystem workflow', () => {
     let tempRoot: string;
     let backups: BackupFiles;
     const currentMetadata: BackupMetadata = {
-        version: 2,
+        version: 3,
         vscodeVersion: '1.2.3',
         appName: 'Visual Studio Code',
         appRoot: '/applications/code/resources/app',
@@ -247,51 +302,129 @@ suite('backup and restore filesystem workflow', () => {
         fs.rmSync(tempRoot, { recursive: true, force: true });
     });
 
-    test('creates pristine backups, applies patches, and restores original files', () => {
-        const workbenchPath = path.join(tempRoot, 'live', 'workbench.css');
+    test('patches all surfaces repeatedly and restores their exact original contents', async () => {
+        const liveRoot = path.join(tempRoot, 'live');
         const markdownPath = path.join(tempRoot, 'live', 'markdown.css');
-        const workbenchOriginal = 'body { font-family: "Segoe UI", sans-serif; }';
         const markdownOriginal = 'body { color: var(--vscode-foreground); }';
-        fs.mkdirSync(path.dirname(workbenchPath), { recursive: true });
-        fs.writeFileSync(workbenchPath, workbenchOriginal);
+        const fontFiles = [
+            {
+                target: path.join(liveRoot, 'workbench.css'),
+                backup: backups.workbenchCss,
+                original: 'workbench-css { font-family: "Segoe UI", sans-serif; }',
+            },
+            {
+                target: path.join(liveRoot, 'workbench.js'),
+                backup: backups.workbenchJs,
+                original: 'const workbenchFont = "Segoe UI";',
+            },
+            {
+                target: path.join(liveRoot, 'sessions.css'),
+                backup: backups.sessionsCss,
+                original: 'sessions-css { font-family: "Segoe UI", sans-serif; }',
+            },
+            {
+                target: path.join(liveRoot, 'sessions.js'),
+                backup: backups.sessionsJs,
+                original: 'const sessionsFont = "Segoe UI";',
+            },
+        ];
+        fs.mkdirSync(liveRoot, { recursive: true });
+        fontFiles.forEach(file => fs.writeFileSync(file.target, file.original));
         fs.writeFileSync(markdownPath, markdownOriginal);
 
-        prepareBackupSet(backups, currentMetadata);
-        const patchWrites = planFontPatchWrites([
-            { target: workbenchPath, backup: backups.workbenchCss },
-        ], 'JetBrains Mono', DEFAULT_FONTS_TO_REPLACE);
-        const markdownWrite = planMarkdownPatchWrite(markdownPath, backups.markdownCss, 'JetBrains Mono');
+        await prepareBackupSet(backups, currentMetadata);
+        const patchWrites = await planFontPatchWrites(fontFiles, 'JetBrains Mono', DEFAULT_FONTS_TO_REPLACE);
+        const markdownWrite = await planMarkdownPatchWrite(markdownPath, backups.markdownCss, 'JetBrains Mono');
         assert.ok(markdownWrite);
         patchWrites.push(markdownWrite);
-        applyWritesTransactionally(patchWrites);
+        await finalizeBackupSet(backups);
+        await applyWritesTransactionally(patchWrites);
 
-        assert.strictEqual(fs.readFileSync(backups.workbenchCss, 'utf-8'), workbenchOriginal);
+        fontFiles.forEach(file => {
+            assert.strictEqual(fs.readFileSync(file.backup, 'utf-8'), file.original);
+            assert.ok(fs.readFileSync(file.target, 'utf-8').includes('"JetBrains Mono"'));
+        });
         assert.strictEqual(fs.readFileSync(backups.markdownCss, 'utf-8'), markdownOriginal);
-        assert.ok(fs.readFileSync(workbenchPath, 'utf-8').includes('"JetBrains Mono"'));
         assert.ok(fs.readFileSync(markdownPath, 'utf-8').includes(buildMarkdownRule('JetBrains Mono')));
 
-        const restoreWrites = planRestoreWrites([
-            { target: workbenchPath, backup: backups.workbenchCss },
+        await prepareBackupSet(backups, currentMetadata);
+        const secondPatchWrites = await planFontPatchWrites(fontFiles, 'Fira Sans', DEFAULT_FONTS_TO_REPLACE);
+        const secondMarkdownWrite = await planMarkdownPatchWrite(markdownPath, backups.markdownCss, 'Fira Sans');
+        assert.ok(secondMarkdownWrite);
+        secondPatchWrites.push(secondMarkdownWrite);
+        await finalizeBackupSet(backups);
+        await applyWritesTransactionally(secondPatchWrites);
+
+        fontFiles.forEach(file => {
+            assert.strictEqual(fs.readFileSync(file.backup, 'utf-8'), file.original);
+            assert.ok(fs.readFileSync(file.target, 'utf-8').includes('"Fira Sans"'));
+        });
+        assert.ok(fs.readFileSync(markdownPath, 'utf-8').includes(buildMarkdownRule('Fira Sans')));
+
+        const restoreWrites = await planRestoreWrites([
+            ...fontFiles,
             { target: markdownPath, backup: backups.markdownCss },
         ]);
-        applyWritesTransactionally(restoreWrites);
+        await applyWritesTransactionally(restoreWrites);
 
-        assert.strictEqual(fs.readFileSync(workbenchPath, 'utf-8'), workbenchOriginal);
+        fontFiles.forEach(file => {
+            assert.strictEqual(fs.readFileSync(file.target, 'utf-8'), file.original);
+        });
         assert.strictEqual(fs.readFileSync(markdownPath, 'utf-8'), markdownOriginal);
     });
 
-    test('removes backups belonging to another VS Code build', () => {
+    test('does not recreate a missing backup from patched live content', async () => {
+        const firstPath = path.join(tempRoot, 'live', 'first.css');
+        const secondPath = path.join(tempRoot, 'live', 'second.css');
+        fs.mkdirSync(path.dirname(firstPath), { recursive: true });
+        fs.writeFileSync(firstPath, 'body { font-family: "Segoe UI"; }');
+        fs.writeFileSync(secondPath, 'body { font-family: "Segoe UI"; }');
+
+        await prepareBackupSet(backups, currentMetadata);
+        const initialWrites = await planFontPatchWrites([
+            { target: firstPath, backup: backups.workbenchCss },
+            { target: secondPath, backup: backups.workbenchJs },
+        ], 'Inter', DEFAULT_FONTS_TO_REPLACE);
+        await finalizeBackupSet(backups);
+        await applyWritesTransactionally(initialWrites);
+        fs.rmSync(backups.workbenchJs);
+
+        await assert.rejects(prepareBackupSet(backups, currentMetadata), /backup/i);
+        assert.strictEqual(fs.existsSync(backups.workbenchJs), false);
+    });
+
+    test('rejects a backup whose content no longer matches its manifest hash', async () => {
+        const targetPath = path.join(tempRoot, 'live', 'workbench.css');
+        fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+        fs.writeFileSync(targetPath, 'body { font-family: "Segoe UI"; }');
+
+        await prepareBackupSet(backups, currentMetadata);
+        await planFontPatchWrites([
+            { target: targetPath, backup: backups.workbenchCss },
+        ], 'Inter', DEFAULT_FONTS_TO_REPLACE);
+        await finalizeBackupSet(backups);
+        fs.writeFileSync(backups.workbenchCss, 'corrupted backup');
+
+        await assert.rejects(prepareBackupSet(backups, currentMetadata), /backup/i);
+        assert.strictEqual(await hasRestorableBackupSet(backups, currentMetadata), false);
+    });
+
+    test('removes backups belonging to another VS Code build', async () => {
         fs.mkdirSync(backups.root, { recursive: true });
         fs.writeFileSync(backups.metadata, JSON.stringify({ ...currentMetadata, buildId: 'old-build' }));
         fs.writeFileSync(backups.workbenchCss, 'stale backup');
 
-        prepareBackupSet(backups, currentMetadata);
+        await prepareBackupSet(backups, currentMetadata);
 
         assert.strictEqual(fs.existsSync(backups.workbenchCss), false);
-        assert.deepStrictEqual(JSON.parse(fs.readFileSync(backups.metadata, 'utf-8')), currentMetadata);
+        assert.deepStrictEqual(JSON.parse(fs.readFileSync(backups.metadata, 'utf-8')), {
+            ...currentMetadata,
+            state: 'creating',
+            files: {},
+        });
     });
 
-    test('migrates matching version 1 metadata without deleting existing backups', () => {
+    test('migrates matching version 1 metadata without deleting existing backups', async () => {
         fs.mkdirSync(backups.root, { recursive: true });
         fs.writeFileSync(backups.metadata, JSON.stringify({
             version: 1,
@@ -300,13 +433,38 @@ suite('backup and restore filesystem workflow', () => {
         }));
         fs.writeFileSync(backups.workbenchCss, 'original version 1 backup');
 
-        prepareBackupSet(backups, currentMetadata);
+        await prepareBackupSet(backups, currentMetadata);
 
         assert.strictEqual(fs.readFileSync(backups.workbenchCss, 'utf-8'), 'original version 1 backup');
-        assert.deepStrictEqual(JSON.parse(fs.readFileSync(backups.metadata, 'utf-8')), currentMetadata);
+        const migratedMetadata = JSON.parse(fs.readFileSync(backups.metadata, 'utf-8')) as BackupMetadata;
+        assert.strictEqual(isBackupMetadataCurrent(migratedMetadata, currentMetadata), true);
+        assert.strictEqual(migratedMetadata.state, 'complete');
+        assert.ok(migratedMetadata.files?.[path.basename(backups.workbenchCss)]);
     });
 
-    test('allows restore directly from a compatible version 1 backup', () => {
+    test('migrates version 2 backups without filling missing entries from live files', async () => {
+        const existingTarget = path.join(tempRoot, 'live', 'workbench.css');
+        const missingBackupTarget = path.join(tempRoot, 'live', 'workbench.js');
+        fs.mkdirSync(path.dirname(existingTarget), { recursive: true });
+        fs.writeFileSync(existingTarget, 'body { font-family: "Inter"; }');
+        fs.writeFileSync(missingBackupTarget, 'const font = "Inter";');
+        fs.mkdirSync(backups.root, { recursive: true });
+        fs.writeFileSync(backups.metadata, JSON.stringify({
+            ...currentMetadata,
+            version: 2,
+        }));
+        fs.writeFileSync(backups.workbenchCss, 'body { font-family: "Segoe UI"; }');
+
+        await prepareBackupSet(backups, currentMetadata);
+
+        await assert.rejects(planFontPatchWrites([
+            { target: existingTarget, backup: backups.workbenchCss },
+            { target: missingBackupTarget, backup: backups.workbenchJs },
+        ], 'JetBrains Mono', DEFAULT_FONTS_TO_REPLACE), /backup/i);
+        assert.strictEqual(fs.existsSync(backups.workbenchJs), false);
+    });
+
+    test('allows restore directly from a compatible version 1 backup', async () => {
         fs.mkdirSync(backups.root, { recursive: true });
         fs.writeFileSync(backups.metadata, JSON.stringify({
             version: 1,
@@ -315,9 +473,9 @@ suite('backup and restore filesystem workflow', () => {
         }));
         fs.writeFileSync(backups.workbenchCss, 'original version 1 backup');
 
-        assert.strictEqual(hasRestorableBackupSet(backups, currentMetadata), true);
+        assert.strictEqual(await hasRestorableBackupSet(backups, currentMetadata), true);
         assert.strictEqual(
-            hasRestorableBackupSet(backups, { ...currentMetadata, vscodeVersion: '1.2.4' }),
+            await hasRestorableBackupSet(backups, { ...currentMetadata, vscodeVersion: '1.2.4' }),
             false,
         );
     });
@@ -553,6 +711,29 @@ suite('Extension integration', () => {
             e.packageJSON?.name === 'ui-font-changer-for-vscode',
         );
         assert.ok(ext, 'ui-font-changer-for-vscode extension should be registered');
+    });
+
+    test('token-safe replacement updates the installed VS Code bundles', () => {
+        const targets = getTargetFiles(vscode.env.appRoot);
+        const namesToReplace = getDefaultFontsToReplaceForPlatform(process.platform);
+        const bundlePaths = [
+            targets.workbenchCss,
+            targets.workbenchJs,
+            targets.sessionsCss,
+            targets.sessionsJs,
+        ].filter(filePath => fs.existsSync(filePath));
+
+        assert.ok(bundlePaths.length > 0, 'at least one VS Code UI bundle should exist');
+        bundlePaths.forEach(filePath => {
+            const content = fs.readFileSync(filePath, 'utf-8');
+            if (containsTargetFontReferences(content, namesToReplace)) {
+                assert.notStrictEqual(
+                    replaceFontInContent(content, 'Integration Test Font', namesToReplace),
+                    content,
+                    `${path.basename(filePath)} should contain a replaceable complete font family`,
+                );
+            }
+        });
     });
 
     test('registers the ui-font-changer-for-vscode.change command', async () => {

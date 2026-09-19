@@ -19,7 +19,7 @@
   ],
   "publisher": "ch3thanhs",
   "author": "Chethan",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "repository": {
     "type": "git",
     "url": "https://github.com/ch3thanhs/ui-font-changer-vscode.git"
@@ -64,9 +64,10 @@
     "check:vscode-bundles": "node ./scripts/check-vscode-bundles.mjs",
     "check:release-version": "node ./scripts/check-release-version.mjs",
     "compile": "tsc -p ./",
+    "package:vsix": "vsce package --allow-missing-repository",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
-    "lint": "eslint src --ext ts",
+    "lint": "eslint src --ext ts --max-warnings=0",
     "test": "vscode-test"
   },
   "devDependencies": {
@@ -77,6 +78,7 @@
     "@typescript-eslint/parser": "^6.13.1",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "4.0.0",
     "eslint": "^8.54.0",
     "typescript": "^5.3.2"
   },
