@@ -9,7 +9,6 @@ import {
     writeFile,
 } from 'node:fs/promises';
 import * as net from 'node:net';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -55,7 +54,9 @@ function getFreePort() {
 
             if (!address || typeof address === 'string') {
                 server.close();
-                reject(new Error('Could not determine a free TCP port.'));
+                reject(
+                    new Error('Could not determine a free TCP port.'),
+                );
                 return;
             }
 
@@ -72,35 +73,40 @@ function getFreePort() {
     });
 }
 
-async function waitForCDP(port, child, timeoutMs = 60_000) {
-    const endpoint = `http://127.0.0.1:${port}/json/version`;
+function extractDevToolsEndpoint(text) {
+    const match = text.match(
+        /DevTools listening on (ws:\/\/[^\s]+)/,
+    );
+
+    return match?.[1] ?? null;
+}
+
+async function waitForDevToolsEndpoint(
+    run,
+    timeoutMs = 60_000,
+) {
     const deadline = Date.now() + timeoutMs;
 
     while (Date.now() < deadline) {
-        if (child.exitCode !== null) {
+        if (run.child.exitCode !== null) {
             throw new Error(
-                `VS Code exited before CDP became available. ` +
-                `exitCode=${child.exitCode}`,
+                `VS Code exited before its DevTools endpoint ` +
+                `became available. exitCode=${run.child.exitCode}`,
             );
         }
 
-        try {
-            const response = await fetch(endpoint);
+        const endpoint = run.getDevToolsEndpoint();
 
-            if (response.ok) {
-                log(`CDP endpoint is available on port ${port}.`);
-                return;
-            }
-        } catch {
-            // VS Code is still starting.
+        if (endpoint) {
+            return endpoint;
         }
 
-        await sleep(250);
+        await sleep(100);
     }
 
     throw new Error(
-        `VS Code did not expose the Chrome DevTools endpoint ` +
-        `on port ${port} within ${timeoutMs}ms.`,
+        'Timed out waiting for VS Code to announce its ' +
+        'DevTools websocket endpoint.',
     );
 }
 
@@ -141,19 +147,43 @@ function launchVSCode(
     const stdout = [];
     const stderr = [];
 
+    let devToolsEndpoint = null;
+
+    const processOutput = (text, output, label) => {
+        output.push(text);
+
+        const endpoint = extractDevToolsEndpoint(text);
+
+        if (endpoint && !devToolsEndpoint) {
+            devToolsEndpoint = endpoint;
+
+            log(
+                `Detected VS Code DevTools endpoint: ${endpoint}`,
+            );
+        }
+
+        process.stdout.write(
+            `[VS Code ${label}] ${text}`,
+        );
+    };
+
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
 
     child.stdout?.on('data', data => {
-        const text = data.toString();
-        stdout.push(text);
-        process.stdout.write(`[VS Code stdout] ${text}`);
+        processOutput(
+            data.toString(),
+            stdout,
+            'stdout',
+        );
     });
 
     child.stderr?.on('data', data => {
-        const text = data.toString();
-        stderr.push(text);
-        process.stderr.write(`[VS Code stderr] ${text}`);
+        processOutput(
+            data.toString(),
+            stderr,
+            'stderr',
+        );
     });
 
     child.once('error', error => {
@@ -172,6 +202,7 @@ function launchVSCode(
         child,
         stdout,
         stderr,
+        getDevToolsEndpoint: () => devToolsEndpoint,
     };
 }
 
@@ -187,7 +218,10 @@ async function stopVSCode(child) {
     await new Promise(resolve => {
         const timer = setTimeout(() => {
             if (child.exitCode === null) {
-                log('VS Code did not exit cleanly; sending SIGKILL.');
+                log(
+                    'VS Code did not exit cleanly; sending SIGKILL.',
+                );
+
                 child.kill('SIGKILL');
             }
 
@@ -201,10 +235,12 @@ async function stopVSCode(child) {
     });
 }
 
-async function connectToWorkbench(port, child) {
-    await waitForCDP(port, child);
+async function connectToWorkbench(run) {
+    log('Waiting for VS Code DevTools endpoint...');
 
-    const endpoint = `http://127.0.0.1:${port}`;
+    const endpoint = await waitForDevToolsEndpoint(run);
+
+    log(`Connecting Playwright to ${endpoint}`);
 
     let browser;
 
@@ -212,25 +248,52 @@ async function connectToWorkbench(port, child) {
         browser = await chromium.connectOverCDP(endpoint);
     } catch (error) {
         throw new Error(
-            `CDP endpoint was available, but Playwright could not connect ` +
-            `to VS Code at ${endpoint}.`,
-            { cause: error },
+            `Playwright failed to connect to VS Code DevTools ` +
+            `endpoint: ${endpoint}`,
+            {
+                cause: error,
+            },
         );
     }
+
+    log(
+        `Playwright connected. Contexts: ` +
+        `${browser.contexts().length}`,
+    );
 
     const deadline = Date.now() + 60_000;
 
     while (Date.now() < deadline) {
-        for (const context of browser.contexts()) {
-            for (const page of context.pages()) {
-                try {
-                    const workbench = page.locator('.monaco-workbench');
+        const contexts = browser.contexts();
 
-                    if (await workbench.count() === 0) {
+        for (const context of contexts) {
+            const pages = context.pages();
+
+            log(
+                `Found ${pages.length} page(s) in VS Code context.`,
+            );
+
+            for (const page of pages) {
+                try {
+                    const url = page.url();
+
+                    log(`Inspecting page: ${url}`);
+
+                    const workbench = page.locator(
+                        '.monaco-workbench',
+                    );
+
+                    const count = await workbench.count();
+
+                    log(
+                        `Workbench elements found: ${count}`,
+                    );
+
+                    if (count === 0) {
                         continue;
                     }
 
-                    await workbench.waitFor({
+                    await workbench.first().waitFor({
                         state: 'visible',
                         timeout: 5_000,
                     });
@@ -243,8 +306,15 @@ async function connectToWorkbench(port, child) {
                         browser,
                         page,
                     };
-                } catch {
-                    // The page/workbench may still be initializing.
+                } catch (error) {
+                    log(
+                        `Page not ready yet: ` +
+                        `${
+                            error instanceof Error
+                                ? error.message
+                                : String(error)
+                        }`,
+                    );
                 }
             }
         }
@@ -259,7 +329,10 @@ async function connectToWorkbench(port, child) {
     );
 }
 
-async function waitForQuickInput(page, timeout = 30_000) {
+async function waitForQuickInput(
+    page,
+    timeout = 30_000,
+) {
     const input = page
         .locator('.quick-input-widget input')
         .last();
@@ -285,7 +358,9 @@ async function openCommandPalette(page) {
 
     const command = page
         .locator('.quick-input-widget .monaco-list-row')
-        .filter({ hasText: COMMAND_NAME })
+        .filter({
+            hasText: COMMAND_NAME,
+        })
         .first();
 
     await command.waitFor({
@@ -297,7 +372,9 @@ async function openCommandPalette(page) {
 }
 
 async function selectFont(page, fontName) {
-    log(`Looking for discovered font "${fontName}"...`);
+    log(
+        `Looking for discovered font "${fontName}"...`,
+    );
 
     const input = await waitForQuickInput(page);
 
@@ -305,16 +382,25 @@ async function selectFont(page, fontName) {
 
     await sleep(500);
 
-    const fontRow = page
+    const fontRows = page
         .locator('.quick-input-widget .monaco-list-row')
-        .filter({ hasText: fontName })
-        .first();
+        .filter({
+            hasText: fontName,
+        });
 
-    if (await fontRow.count() === 0) {
+    const count = await fontRows.count();
+
+    log(
+        `Font rows matching "${fontName}": ${count}`,
+    );
+
+    if (count === 0) {
         throw new Error(
             `Font "${fontName}" was not discovered by the extension.`,
         );
     }
+
+    const fontRow = fontRows.first();
 
     await fontRow.waitFor({
         state: 'visible',
@@ -329,7 +415,9 @@ async function acceptModificationWarning(page) {
 
     const warning = page.getByText(
         'UI Font Changer modifies VS Code installation files.',
-        { exact: false },
+        {
+            exact: false,
+        },
     );
 
     await warning.waitFor({
@@ -338,7 +426,9 @@ async function acceptModificationWarning(page) {
     });
 
     const continueButton = page
-        .getByText('Continue', { exact: true })
+        .getByText('Continue', {
+            exact: true,
+        })
         .last();
 
     await continueButton.waitFor({
@@ -350,9 +440,15 @@ async function acceptModificationWarning(page) {
 }
 
 async function waitForSuccess(page, fontName) {
+    log(
+        `Waiting for successful font change to "${fontName}"...`,
+    );
+
     const message = page.getByText(
         `Font changed to ${fontName}.`,
-        { exact: false },
+        {
+            exact: false,
+        },
     );
 
     await message.waitFor({
@@ -362,10 +458,17 @@ async function waitForSuccess(page, fontName) {
 }
 
 async function captureScreenshot(page, filename) {
+    const screenshotPath = path.join(
+        ARTIFACTS_DIR,
+        filename,
+    );
+
     await page.screenshot({
-        path: path.join(ARTIFACTS_DIR, filename),
+        path: screenshotPath,
         fullPage: false,
     });
+
+    log(`Screenshot saved: ${screenshotPath}`);
 }
 
 async function assertPatchedFiles(
@@ -391,7 +494,10 @@ async function assertPatchedFiles(
             continue;
         }
 
-        const updated = await readFile(target, 'utf8');
+        const updated = await readFile(
+            target,
+            'utf8',
+        );
 
         if (updated !== original) {
             changedCount += 1;
@@ -402,7 +508,8 @@ async function assertPatchedFiles(
         )) {
             throw new Error(
                 `${path.basename(target)} does not contain ` +
-                `"${fontName}" after the extension applied the change.`,
+                `"${fontName}" after the extension applied ` +
+                'the change.',
             );
         }
     }
@@ -414,11 +521,15 @@ async function assertPatchedFiles(
         );
     }
 
-    log(`Verified ${changedCount} patched VS Code UI file(s).`);
+    log(
+        `Verified ${changedCount} patched VS Code UI file(s).`,
+    );
 }
 
 async function assertRenderedFont(page, fontName) {
-    log(`Checking rendered UI for "${fontName}"...`);
+    log(
+        `Checking rendered UI for "${fontName}"...`,
+    );
 
     const result = await page.evaluate(font => {
         const wanted = font.toLocaleLowerCase();
@@ -432,14 +543,18 @@ async function assertRenderedFont(page, fontName) {
             document.body,
             workbench,
             ...Array.from(
-                document.querySelectorAll('.monaco-workbench *'),
+                document.querySelectorAll(
+                    '.monaco-workbench *',
+                ),
             ).slice(0, 5000),
         ].filter(Boolean);
 
         const matches = [];
 
         for (const element of elements) {
-            const computed = getComputedStyle(element).fontFamily ?? '';
+            const computed = getComputedStyle(
+                element,
+            ).fontFamily ?? '';
 
             if (
                 computed
@@ -448,9 +563,10 @@ async function assertRenderedFont(page, fontName) {
             ) {
                 matches.push({
                     tag: element.tagName,
-                    className: typeof element.className === 'string'
-                        ? element.className
-                        : '',
+                    className:
+                        typeof element.className === 'string'
+                            ? element.className
+                            : '',
                     fontFamily: computed,
                 });
             }
@@ -486,7 +602,10 @@ async function assertRenderedFont(page, fontName) {
     );
 }
 
-async function writeLogs(run, prefix) {
+async function writeLogs(
+    run,
+    prefix,
+) {
     if (!run) {
         return;
     }
@@ -508,11 +627,15 @@ async function writeLogs(run, prefix) {
     );
 }
 
-function resolveVSCodeCli(vscodeExecutablePath) {
+function resolveVSCodeCli(
+    vscodeExecutablePath,
+) {
     /*
-     * Suppress the automatically generated isolated profile arguments
-     * from @vscode/test-electron because this test supplies its own
-     * short /tmp profile paths.
+     * @vscode/test-electron normally adds its own isolated
+     * profile arguments.
+     *
+     * We want to use our own short /tmp paths so that macOS
+     * Electron does not hit long IPC socket path limits.
      */
     return resolveCliArgsFromVSCodeExecutablePath(
         vscodeExecutablePath,
@@ -561,7 +684,9 @@ async function main() {
 
     await mkdir(
         ARTIFACTS_DIR,
-        { recursive: true },
+        {
+            recursive: true,
+        },
     );
 
     if (!existsSync(VSIX_PATH)) {
@@ -575,10 +700,12 @@ async function main() {
     /*
      * Keep the profile path short.
      *
-     * macOS/Electron can hit Unix socket path length limits when
-     * profile directories are deeply nested inside GitHub's workspace.
+     * GitHub Actions workspace paths can be deep enough to cause
+     * macOS/Electron IPC socket path issues.
      */
-    const userDataDir = await mkdtemp('/tmp/uifc-user-');
+    const userDataDir = await mkdtemp(
+        '/tmp/uifc-user-',
+    );
 
     const extensionsDir = path.join(
         userDataDir,
@@ -587,7 +714,9 @@ async function main() {
 
     await mkdir(
         extensionsDir,
-        { recursive: true },
+        {
+            recursive: true,
+        },
     );
 
     const vscodeExecutablePath =
@@ -598,7 +727,9 @@ async function main() {
     );
 
     const [cli, ...cliArgs] =
-        resolveVSCodeCli(vscodeExecutablePath);
+        resolveVSCodeCli(
+            vscodeExecutablePath,
+        );
 
     await installVSIX(
         cli,
@@ -608,8 +739,7 @@ async function main() {
     );
 
     /*
-     * getTargetFiles() is the same target-resolution logic used by
-     * the extension's patching implementation.
+     * This is the same target resolution used by the extension.
      */
     const appRoot = path.resolve(
         path.dirname(vscodeExecutablePath),
@@ -626,7 +756,10 @@ async function main() {
         if (existsSync(target)) {
             originalContents.set(
                 target,
-                await readFile(target, 'utf8'),
+                await readFile(
+                    target,
+                    'utf8',
+                ),
             );
         }
     }
@@ -635,9 +768,12 @@ async function main() {
     let firstBrowser;
 
     try {
-        const firstPort = await getFreePort();
+        const firstPort =
+            await getFreePort();
 
-        log('Launching VS Code for UI test...');
+        log(
+            `Using DevTools port ${firstPort}.`,
+        );
 
         firstRun = launchVSCode(
             vscodeExecutablePath,
@@ -646,10 +782,10 @@ async function main() {
             firstPort,
         );
 
-        firstBrowser = await connectToWorkbench(
-            firstPort,
-            firstRun.child,
-        );
+        firstBrowser =
+            await connectToWorkbench(
+                firstRun,
+            );
 
         const { page } = firstBrowser;
 
@@ -658,14 +794,18 @@ async function main() {
             '01-before-change.png',
         );
 
-        await openCommandPalette(page);
+        await openCommandPalette(
+            page,
+        );
 
         await selectFont(
             page,
             TEST_FONT,
         );
 
-        await acceptModificationWarning(page);
+        await acceptModificationWarning(
+            page,
+        );
 
         await waitForSuccess(
             page,
@@ -683,7 +823,9 @@ async function main() {
             TEST_FONT,
         );
 
-        log('First phase passed.');
+        log(
+            'First phase passed.',
+        );
     } finally {
         if (firstBrowser) {
             await firstBrowser.browser
@@ -705,9 +847,12 @@ async function main() {
     let secondBrowser;
 
     try {
-        const secondPort = await getFreePort();
+        const secondPort =
+            await getFreePort();
 
-        log('Restarting VS Code...');
+        log(
+            `Using DevTools port ${secondPort} for restart.`,
+        );
 
         secondRun = launchVSCode(
             vscodeExecutablePath,
@@ -716,10 +861,10 @@ async function main() {
             secondPort,
         );
 
-        secondBrowser = await connectToWorkbench(
-            secondPort,
-            secondRun.child,
-        );
+        secondBrowser =
+            await connectToWorkbench(
+                secondRun,
+            );
 
         const { page } = secondBrowser;
 
@@ -735,7 +880,9 @@ async function main() {
             TEST_FONT,
         );
 
-        log('macOS UI smoke test passed.');
+        log(
+            'macOS UI smoke test passed.',
+        );
     } finally {
         if (secondBrowser) {
             await secondBrowser.browser
@@ -767,7 +914,9 @@ main().catch(async error => {
 
     await mkdir(
         ARTIFACTS_DIR,
-        { recursive: true },
+        {
+            recursive: true,
+        },
     ).catch(() => undefined);
 
     process.exitCode = 1;
