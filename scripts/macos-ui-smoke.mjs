@@ -366,18 +366,45 @@ async function waitForFontPicker(
 
         return;
     } catch {
+        /*
+         * Fall back to identifying the font picker by its
+         * placeholder. This avoids depending solely on the
+         * Quick Pick title DOM structure.
+         */
+        const fontInput = page.locator(
+            '.quick-input-widget input[placeholder*="Choose an installed font"]',
+        );
+
+        if (await fontInput.count()) {
+            await fontInput.last().waitFor({
+                state: 'visible',
+                timeout: 5_000,
+            });
+
+            log('UI font picker is open.');
+
+            return;
+        }
+
         const inputs = page.locator(
             '.quick-input-widget input',
         );
 
         const inputCount = await inputs.count();
-
         const visibleInputs = [];
 
-        for (let index = 0; index < inputCount; index += 1) {
+        for (
+            let index = 0;
+            index < inputCount;
+            index += 1
+        ) {
             const input = inputs.nth(index);
 
-            if (await input.isVisible().catch(() => false)) {
+            if (
+                await input
+                    .isVisible()
+                    .catch(() => false)
+            ) {
                 visibleInputs.push({
                     index,
                     value: await input
@@ -391,8 +418,8 @@ async function waitForFontPicker(
         }
 
         throw new Error(
-            `The "${COMMAND_NAME}" command was not opened. ` +
-            `Visible Quick Input inputs: ` +
+            'The "Change Font" command did not open the ' +
+            `font picker. Visible Quick Input inputs: ` +
             `${JSON.stringify(visibleInputs)}`,
         );
     }
@@ -400,58 +427,89 @@ async function waitForFontPicker(
 
 async function openCommandPalette(page) {
     log(
-        `Opening Command Palette and selecting "${COMMAND_NAME}"...`,
+        `Opening Command Palette with macOS shortcut ` +
+        `and selecting "${COMMAND_NAME}"...`,
     );
 
-    await page.keyboard.press('F1');
+    /*
+     * On macOS the documented shortcut for Show Command Palette
+     * is Cmd+Shift+P.
+     *
+     * F1 is also documented as a Command Palette shortcut, but
+     * in the GitHub macOS runner it opened Quick Open in our
+     * previous test, so use the explicit macOS shortcut.
+     */
+    await page.keyboard.press('Meta+Shift+P');
 
     const input = await waitForQuickInput(page);
 
-    await input.fill(COMMAND_NAME);
+    /*
+     * Explicitly enter command mode.
+     *
+     * The ">" prefix tells VS Code to search commands rather than
+     * files/symbols. VS Code documents ">" as Command mode.
+     */
+    await input.fill(`>${COMMAND_NAME}`);
 
     await sleep(500);
 
-    /*
-     * Do not depend on VS Code's internal list-row DOM here.
-     *
-     * Command contributions define:
-     *
-     *   title: "Change Font"
-     *   category: "UI Font Changer"
-     *
-     * The category is metadata and may not be rendered as part of
-     * the option's accessible/text content.
-     *
-     * Quick Pick accepts the currently selected result with Enter.
-     */
     log(
-        `Accepting the "${COMMAND_NAME}" Command Palette result...`,
+        `Command Palette input value: ` +
+        `${await input.inputValue()}`,
     );
 
+    /*
+     * Do not depend on VS Code's internal command-list DOM.
+     * The currently filtered command is accepted with Enter.
+     */
     await page.keyboard.press('Enter');
 
     await waitForFontPicker(page);
 }
 
-async function selectFont(page, fontName) {
+async function selectFont(
+    page,
+    fontName,
+) {
     log(
         `Looking for discovered font "${fontName}"...`,
     );
 
-    const input = await waitForQuickInput(page);
+    /*
+     * The extension uses:
+     *
+     *   placeHolder:
+     *     "Choose an installed font or enter a custom one"
+     *
+     * Use that stable attribute instead of VS Code's internal
+     * .monaco-list-row structure.
+     */
+    const fontInput = page
+        .locator(
+            '.quick-input-widget input[placeholder*="Choose an installed font"]',
+        )
+        .last();
 
-    await input.fill(fontName);
+    await fontInput.waitFor({
+        state: 'visible',
+        timeout: 30_000,
+    });
+
+    await fontInput.fill(fontName);
 
     await sleep(500);
 
     /*
-     * Prefer the accessible option role because it is less coupled
-     * to VS Code's internal list CSS classes.
+     * First try the accessible option role.
      */
+    const escapedFontName = escapeRegExp(
+        fontName,
+    );
+
     const option = page
         .getByRole('option', {
             name: new RegExp(
-                `^${escapeRegExp(fontName)}(?:\\s|$)`,
+                `^${escapedFontName}(?:\\s|$)`,
                 'i',
             ),
         })
@@ -473,18 +531,19 @@ async function selectFont(page, fontName) {
     }
 
     /*
-     * Fallback: use keyboard navigation.
-     *
-     * After filtering the Quick Pick to an exact installed font
-     * name, the first matching result should be active.
+     * Fallback to VS Code Quick Pick keyboard behavior.
      */
     log(
-        `Could not locate "${fontName}" as an accessible option; ` +
-        'using keyboard selection.',
+        `Could not locate "${fontName}" as an accessible ` +
+        'option; using keyboard selection.',
     );
 
     await page.keyboard.press('ArrowDown');
     await page.keyboard.press('Enter');
+
+    log(
+        `Selected font "${fontName}" using keyboard navigation.`,
+    );
 }
 
 function escapeRegExp(value) {
@@ -523,6 +582,10 @@ async function acceptModificationWarning(page) {
     });
 
     await continueButton.click();
+
+    log(
+        'Modification warning accepted.',
+    );
 }
 
 async function waitForSuccess(
@@ -533,11 +596,6 @@ async function waitForSuccess(
         `Waiting for successful font change to "${fontName}"...`,
     );
 
-    /*
-     * The extension's actual message includes a surface summary
-     * after "Font changed to <font>.", so match only the stable
-     * beginning of the message.
-     */
     const message = page.getByText(
         `Font changed to ${fontName}.`,
         {
@@ -549,6 +607,10 @@ async function waitForSuccess(
         state: 'visible',
         timeout: 60_000,
     });
+
+    log(
+        'Extension reported the font change successfully.',
+    );
 }
 
 async function captureScreenshot(
@@ -587,7 +649,9 @@ async function assertPatchedFiles(
     let changedCount = 0;
 
     for (const target of existingTargets) {
-        const original = originalContents.get(target);
+        const original = originalContents.get(
+            target,
+        );
 
         if (original === undefined) {
             continue;
@@ -602,9 +666,13 @@ async function assertPatchedFiles(
             changedCount += 1;
         }
 
-        if (!updated.toLocaleLowerCase().includes(
-            fontName.toLocaleLowerCase(),
-        )) {
+        if (
+            !updated
+                .toLocaleLowerCase()
+                .includes(
+                    fontName.toLocaleLowerCase(),
+                )
+        ) {
             throw new Error(
                 `${path.basename(target)} does not contain ` +
                 `"${fontName}" after the extension applied ` +
@@ -751,7 +819,9 @@ async function installVSIX(
     userDataDir,
     extensionsDir,
 ) {
-    log(`Installing VSIX: ${VSIX_PATH}`);
+    log(
+        `Installing VSIX: ${VSIX_PATH}`,
+    );
 
     if (!existsSync(VSIX_PATH)) {
         throw new Error(
@@ -822,7 +892,9 @@ async function main() {
     );
 
     const vscodeExecutablePath =
-        await downloadAndUnzipVSCode('stable');
+        await downloadAndUnzipVSCode(
+            'stable',
+        );
 
     log(
         `VS Code executable: ${vscodeExecutablePath}`,
@@ -955,7 +1027,8 @@ async function main() {
             await getFreePort();
 
         log(
-            `Using DevTools port ${secondPort} for restart.`,
+            `Using DevTools port ${secondPort} ` +
+            'for restart.',
         );
 
         secondRun = launchVSCode(
