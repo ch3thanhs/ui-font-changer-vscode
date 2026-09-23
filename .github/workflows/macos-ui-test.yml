@@ -1,0 +1,56 @@
+name: macOS UI Smoke Test
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-ui:
+    name: VS Code stable UI smoke test (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Compile
+        run: npm run compile
+
+      - name: Package VSIX
+        run: >
+          npm run package:vsix --
+          --out "${RUNNER_TEMP}/ui-font-changer-for-vscode.vsix"
+
+      - name: Run macOS UI smoke test
+        env:
+          VSIX_PATH: ${{ runner.temp }}/ui-font-changer-for-vscode.vsix
+          MACOS_UI_ARTIFACTS_DIR: ${{ github.workspace }}/test-artifacts/macos-ui
+        run: npm run test:macos-ui
+
+      - name: Upload macOS UI artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: macos-ui-smoke-test
+          path: test-artifacts/macos-ui
+          if-no-files-found: warn
+          retention-days: 14
