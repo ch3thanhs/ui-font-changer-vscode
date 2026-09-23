@@ -33,7 +33,7 @@ const VSIX_PATH = process.env.VSIX_PATH
 
 const TEST_FONT = process.env.MACOS_UI_TEST_FONT ?? 'Helvetica';
 
-const COMMAND_NAME = 'UI Font Changer: Change Font';
+const COMMAND_NAME = 'Change Font';
 
 function log(message) {
     console.log(`[macOS UI smoke] ${message}`);
@@ -345,8 +345,63 @@ async function waitForQuickInput(
     return input;
 }
 
+async function waitForFontPicker(
+    page,
+    timeout = 30_000,
+) {
+    const title = page.getByText(
+        'Select the UI font',
+        {
+            exact: true,
+        },
+    );
+
+    try {
+        await title.waitFor({
+            state: 'visible',
+            timeout,
+        });
+
+        log('UI font picker is open.');
+
+        return;
+    } catch {
+        const inputs = page.locator(
+            '.quick-input-widget input',
+        );
+
+        const inputCount = await inputs.count();
+
+        const visibleInputs = [];
+
+        for (let index = 0; index < inputCount; index += 1) {
+            const input = inputs.nth(index);
+
+            if (await input.isVisible().catch(() => false)) {
+                visibleInputs.push({
+                    index,
+                    value: await input
+                        .inputValue()
+                        .catch(() => ''),
+                    placeholder: await input
+                        .getAttribute('placeholder')
+                        .catch(() => null),
+                });
+            }
+        }
+
+        throw new Error(
+            `The "${COMMAND_NAME}" command was not opened. ` +
+            `Visible Quick Input inputs: ` +
+            `${JSON.stringify(visibleInputs)}`,
+        );
+    }
+}
+
 async function openCommandPalette(page) {
-    log('Opening Command Palette...');
+    log(
+        `Opening Command Palette and selecting "${COMMAND_NAME}"...`,
+    );
 
     await page.keyboard.press('F1');
 
@@ -354,21 +409,28 @@ async function openCommandPalette(page) {
 
     await input.fill(COMMAND_NAME);
 
-    await sleep(300);
+    await sleep(500);
 
-    const command = page
-        .locator('.quick-input-widget .monaco-list-row')
-        .filter({
-            hasText: COMMAND_NAME,
-        })
-        .first();
+    /*
+     * Do not depend on VS Code's internal list-row DOM here.
+     *
+     * Command contributions define:
+     *
+     *   title: "Change Font"
+     *   category: "UI Font Changer"
+     *
+     * The category is metadata and may not be rendered as part of
+     * the option's accessible/text content.
+     *
+     * Quick Pick accepts the currently selected result with Enter.
+     */
+    log(
+        `Accepting the "${COMMAND_NAME}" Command Palette result...`,
+    );
 
-    await command.waitFor({
-        state: 'visible',
-        timeout: 10_000,
-    });
+    await page.keyboard.press('Enter');
 
-    await command.click();
+    await waitForFontPicker(page);
 }
 
 async function selectFont(page, fontName) {
@@ -382,36 +444,60 @@ async function selectFont(page, fontName) {
 
     await sleep(500);
 
-    const fontRows = page
-        .locator('.quick-input-widget .monaco-list-row')
-        .filter({
-            hasText: fontName,
+    /*
+     * Prefer the accessible option role because it is less coupled
+     * to VS Code's internal list CSS classes.
+     */
+    const option = page
+        .getByRole('option', {
+            name: new RegExp(
+                `^${escapeRegExp(fontName)}(?:\\s|$)`,
+                'i',
+            ),
+        })
+        .first();
+
+    if (await option.count()) {
+        await option.waitFor({
+            state: 'visible',
+            timeout: 10_000,
         });
 
-    const count = await fontRows.count();
+        await option.click();
 
-    log(
-        `Font rows matching "${fontName}": ${count}`,
-    );
-
-    if (count === 0) {
-        throw new Error(
-            `Font "${fontName}" was not discovered by the extension.`,
+        log(
+            `Selected discovered font "${fontName}".`,
         );
+
+        return;
     }
 
-    const fontRow = fontRows.first();
+    /*
+     * Fallback: use keyboard navigation.
+     *
+     * After filtering the Quick Pick to an exact installed font
+     * name, the first matching result should be active.
+     */
+    log(
+        `Could not locate "${fontName}" as an accessible option; ` +
+        'using keyboard selection.',
+    );
 
-    await fontRow.waitFor({
-        state: 'visible',
-        timeout: 10_000,
-    });
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('Enter');
+}
 
-    await fontRow.click();
+function escapeRegExp(value) {
+    return value.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        '\\$&',
+    );
 }
 
 async function acceptModificationWarning(page) {
-    log('Waiting for the modification warning...');
+    log(
+        'Waiting for the modification warning...',
+    );
 
     const warning = page.getByText(
         'UI Font Changer modifies VS Code installation files.',
@@ -439,11 +525,19 @@ async function acceptModificationWarning(page) {
     await continueButton.click();
 }
 
-async function waitForSuccess(page, fontName) {
+async function waitForSuccess(
+    page,
+    fontName,
+) {
     log(
         `Waiting for successful font change to "${fontName}"...`,
     );
 
+    /*
+     * The extension's actual message includes a surface summary
+     * after "Font changed to <font>.", so match only the stable
+     * beginning of the message.
+     */
     const message = page.getByText(
         `Font changed to ${fontName}.`,
         {
@@ -457,7 +551,10 @@ async function waitForSuccess(page, fontName) {
     });
 }
 
-async function captureScreenshot(page, filename) {
+async function captureScreenshot(
+    page,
+    filename,
+) {
     const screenshotPath = path.join(
         ARTIFACTS_DIR,
         filename,
@@ -468,7 +565,9 @@ async function captureScreenshot(page, filename) {
         fullPage: false,
     });
 
-    log(`Screenshot saved: ${screenshotPath}`);
+    log(
+        `Screenshot saved: ${screenshotPath}`,
+    );
 }
 
 async function assertPatchedFiles(
@@ -526,7 +625,10 @@ async function assertPatchedFiles(
     );
 }
 
-async function assertRenderedFont(page, fontName) {
+async function assertRenderedFont(
+    page,
+    fontName,
+) {
     log(
         `Checking rendered UI for "${fontName}"...`,
     );
@@ -631,11 +733,9 @@ function resolveVSCodeCli(
     vscodeExecutablePath,
 ) {
     /*
-     * @vscode/test-electron normally adds its own isolated
-     * profile arguments.
-     *
-     * We want to use our own short /tmp paths so that macOS
-     * Electron does not hit long IPC socket path limits.
+     * Suppress the automatically generated isolated profile
+     * arguments from @vscode/test-electron because this test
+     * supplies its own short /tmp profile paths.
      */
     return resolveCliArgsFromVSCodeExecutablePath(
         vscodeExecutablePath,
@@ -695,7 +795,9 @@ async function main() {
         );
     }
 
-    log(`Testing font: ${TEST_FONT}`);
+    log(
+        `Testing font: ${TEST_FONT}`,
+    );
 
     /*
      * Keep the profile path short.
@@ -748,7 +850,9 @@ async function main() {
         'app',
     );
 
-    const targets = getTargetFiles(appRoot);
+    const targets = getTargetFiles(
+        appRoot,
+    );
 
     const originalContents = new Map();
 
