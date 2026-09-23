@@ -221,31 +221,32 @@ async function connectToWorkbench(port, child) {
     const deadline = Date.now() + 60_000;
 
     while (Date.now() < deadline) {
-        const pages = browser.contexts().flatMap(
-            context => context.pages(),
-        );
+        for (const context of browser.contexts()) {
+            for (const page of context.pages()) {
+                try {
+                    const workbench = page.locator('.monaco-workbench');
 
-        for (const page of pages) {
-            const hasDriver = await page.evaluate(() => (
-                typeof globalThis.driver?.whenWorkbenchRestored === 'function'
-            )).catch(() => false);
+                    if (await workbench.count() === 0) {
+                        continue;
+                    }
 
-            if (!hasDriver) {
-                continue;
+                    await workbench.waitFor({
+                        state: 'visible',
+                        timeout: 5_000,
+                    });
+
+                    await page.bringToFront();
+
+                    log('VS Code workbench is ready.');
+
+                    return {
+                        browser,
+                        page,
+                    };
+                } catch {
+                    // The page/workbench may still be initializing.
+                }
             }
-
-            await page.evaluate(
-                () => globalThis.driver.whenWorkbenchRestored(),
-            );
-
-            await page.bringToFront();
-
-            log('VS Code workbench is ready.');
-
-            return {
-                browser,
-                page,
-            };
         }
 
         await sleep(500);
@@ -254,7 +255,7 @@ async function connectToWorkbench(port, child) {
     await browser.close();
 
     throw new Error(
-        'Timed out waiting for the VS Code workbench smoke-test driver.',
+        'Timed out waiting for a visible VS Code workbench.',
     );
 }
 
@@ -509,12 +510,9 @@ async function writeLogs(run, prefix) {
 
 function resolveVSCodeCli(vscodeExecutablePath) {
     /*
-     * Normally resolveCliArgsFromVSCodeExecutablePath adds the
-     * machine-isolation profile arguments automatically.
-     *
-     * We provide our own short /tmp profile paths, so suppress those
-     * automatically generated arguments to avoid duplicate
-     * --user-data-dir / --extensions-dir options.
+     * Suppress the automatically generated isolated profile arguments
+     * from @vscode/test-electron because this test supplies its own
+     * short /tmp profile paths.
      */
     return resolveCliArgsFromVSCodeExecutablePath(
         vscodeExecutablePath,
@@ -581,6 +579,7 @@ async function main() {
      * profile directories are deeply nested inside GitHub's workspace.
      */
     const userDataDir = await mkdtemp('/tmp/uifc-user-');
+
     const extensionsDir = path.join(
         userDataDir,
         'extensions',
@@ -609,8 +608,8 @@ async function main() {
     );
 
     /*
-     * patcher.ts exports getTargetFiles(), which is the same target
-     * resolution used by the extension itself.
+     * getTargetFiles() is the same target-resolution logic used by
+     * the extension's patching implementation.
      */
     const appRoot = path.resolve(
         path.dirname(vscodeExecutablePath),
@@ -647,17 +646,6 @@ async function main() {
             firstPort,
         );
 
-        /*
-         * IMPORTANT:
-         *
-         * Pass the actual child process to connectToWorkbench().
-         * This is what fixes the previous:
-         *
-         *   Cannot read properties of undefined
-         *   (reading 'exitCode')
-         *
-         * error.
-         */
         firstBrowser = await connectToWorkbench(
             firstPort,
             firstRun.child,
