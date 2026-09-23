@@ -44,7 +44,7 @@ async function sleep(ms) {
     await delay(ms);
 }
 
-async function getFreePort() {
+function getFreePort() {
     return new Promise((resolve, reject) => {
         const server = net.createServer();
 
@@ -99,7 +99,8 @@ async function waitForCDP(port, child, timeoutMs = 60_000) {
     }
 
     throw new Error(
-        `VS Code did not expose the Chrome DevTools endpoint on port ${port}.`,
+        `VS Code did not expose the Chrome DevTools endpoint ` +
+        `on port ${port} within ${timeoutMs}ms.`,
     );
 }
 
@@ -124,14 +125,18 @@ function launchVSCode(
     log(`Launching VS Code: ${executablePath}`);
     log(`Arguments: ${args.join(' ')}`);
 
-    const child = spawn(executablePath, args, {
-        cwd: process.cwd(),
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: {
-            ...process.env,
-            ELECTRON_ENABLE_LOGGING: '1',
+    const child = spawn(
+        executablePath,
+        args,
+        {
+            cwd: process.cwd(),
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: {
+                ...process.env,
+                ELECTRON_ENABLE_LOGGING: '1',
+            },
         },
-    });
+    );
 
     const stdout = [];
     const stderr = [];
@@ -152,11 +157,15 @@ function launchVSCode(
     });
 
     child.once('error', error => {
-        console.error(`[VS Code spawn error] ${error.stack ?? error}`);
+        console.error(
+            `[VS Code spawn error] ${error.stack ?? error}`,
+        );
     });
 
     child.once('exit', (code, signal) => {
-        log(`VS Code exited: code=${code}, signal=${signal}`);
+        log(
+            `VS Code exited: code=${code}, signal=${signal}`,
+        );
     });
 
     return {
@@ -181,6 +190,7 @@ async function stopVSCode(child) {
                 log('VS Code did not exit cleanly; sending SIGKILL.');
                 child.kill('SIGKILL');
             }
+
             resolve();
         }, 10_000);
 
@@ -191,12 +201,22 @@ async function stopVSCode(child) {
     });
 }
 
-async function connectToWorkbench(port) {
-    await waitForCDP(port);
+async function connectToWorkbench(port, child) {
+    await waitForCDP(port, child);
 
-    const browser = await chromium.connectOverCDP(
-        `http://127.0.0.1:${port}`,
-    );
+    const endpoint = `http://127.0.0.1:${port}`;
+
+    let browser;
+
+    try {
+        browser = await chromium.connectOverCDP(endpoint);
+    } catch (error) {
+        throw new Error(
+            `CDP endpoint was available, but Playwright could not connect ` +
+            `to VS Code at ${endpoint}.`,
+            { cause: error },
+        );
+    }
 
     const deadline = Date.now() + 60_000;
 
@@ -220,6 +240,8 @@ async function connectToWorkbench(port) {
 
             await page.bringToFront();
 
+            log('VS Code workbench is ready.');
+
             return {
                 browser,
                 page,
@@ -237,7 +259,9 @@ async function connectToWorkbench(port) {
 }
 
 async function waitForQuickInput(page, timeout = 30_000) {
-    const input = page.locator('.quick-input-widget input').last();
+    const input = page
+        .locator('.quick-input-widget input')
+        .last();
 
     await input.waitFor({
         state: 'visible',
@@ -274,12 +298,7 @@ async function openCommandPalette(page) {
 async function selectFont(page, fontName) {
     log(`Looking for discovered font "${fontName}"...`);
 
-    const input = page.locator('.quick-input-widget input').last();
-
-    await input.waitFor({
-        state: 'visible',
-        timeout: 30_000,
-    });
+    const input = await waitForQuickInput(page);
 
     await input.fill(fontName);
 
@@ -292,8 +311,7 @@ async function selectFont(page, fontName) {
 
     if (await fontRow.count() === 0) {
         throw new Error(
-            `Font "${fontName}" was not discovered by the extension. ` +
-            `This test intentionally requires the font to appear in the installed-font list.`,
+            `Font "${fontName}" was not discovered by the extension.`,
         );
     }
 
@@ -322,6 +340,11 @@ async function acceptModificationWarning(page) {
         .getByText('Continue', { exact: true })
         .last();
 
+    await continueButton.waitFor({
+        state: 'visible',
+        timeout: 10_000,
+    });
+
     await continueButton.click();
 }
 
@@ -349,7 +372,8 @@ async function assertPatchedFiles(
     originalContents,
     fontName,
 ) {
-    const existingTargets = Object.values(targets).filter(existsSync);
+    const existingTargets = Object.values(targets)
+        .filter(existsSync);
 
     if (existingTargets.length === 0) {
         throw new Error(
@@ -361,11 +385,12 @@ async function assertPatchedFiles(
 
     for (const target of existingTargets) {
         const original = originalContents.get(target);
-        const updated = await readFile(target, 'utf8');
 
         if (original === undefined) {
             continue;
         }
+
+        const updated = await readFile(target, 'utf8');
 
         if (updated !== original) {
             changedCount += 1;
@@ -375,15 +400,16 @@ async function assertPatchedFiles(
             fontName.toLocaleLowerCase(),
         )) {
             throw new Error(
-                `${path.basename(target)} does not contain "${fontName}" ` +
-                'after the extension applied the change.',
+                `${path.basename(target)} does not contain ` +
+                `"${fontName}" after the extension applied the change.`,
             );
         }
     }
 
     if (changedCount === 0) {
         throw new Error(
-            'The extension reported success, but none of the VS Code files changed.',
+            'The extension reported success, but none of the ' +
+            'VS Code files changed.',
         );
     }
 
@@ -396,20 +422,29 @@ async function assertRenderedFont(page, fontName) {
     const result = await page.evaluate(font => {
         const wanted = font.toLocaleLowerCase();
 
+        const workbench = document.querySelector(
+            '.monaco-workbench',
+        );
+
         const elements = [
             document.documentElement,
             document.body,
+            workbench,
             ...Array.from(
                 document.querySelectorAll('.monaco-workbench *'),
             ).slice(0, 5000),
-        ];
+        ].filter(Boolean);
 
         const matches = [];
 
         for (const element of elements) {
             const computed = getComputedStyle(element).fontFamily ?? '';
 
-            if (computed.toLocaleLowerCase().includes(wanted)) {
+            if (
+                computed
+                    .toLocaleLowerCase()
+                    .includes(wanted)
+            ) {
                 matches.push({
                     tag: element.tagName,
                     className: typeof element.className === 'string'
@@ -427,24 +462,26 @@ async function assertRenderedFont(page, fontName) {
         return {
             matches,
             workbenchFontFamily: getComputedStyle(
-                document.querySelector('.monaco-workbench')
-                    ?? document.body,
+                workbench ?? document.body,
             ).fontFamily,
         };
     }, fontName);
 
     log(
-        `Workbench computed font-family: ${result.workbenchFontFamily}`,
+        `Workbench computed font-family: ` +
+        `${result.workbenchFontFamily}`,
     );
 
     if (result.matches.length === 0) {
         throw new Error(
-            `After restart, no visible workbench element uses "${fontName}".`,
+            `After restart, no visible workbench element uses ` +
+            `"${fontName}".`,
         );
     }
 
     log(
-        `Found ${result.matches.length} rendered element(s) using "${fontName}".`,
+        `Found ${result.matches.length} rendered element(s) ` +
+        `using "${fontName}".`,
     );
 }
 
@@ -454,13 +491,36 @@ async function writeLogs(run, prefix) {
     }
 
     await writeFile(
-        path.join(ARTIFACTS_DIR, `${prefix}-stdout.log`),
+        path.join(
+            ARTIFACTS_DIR,
+            `${prefix}-stdout.log`,
+        ),
         run.stdout.join(''),
     );
 
     await writeFile(
-        path.join(ARTIFACTS_DIR, `${prefix}-stderr.log`),
+        path.join(
+            ARTIFACTS_DIR,
+            `${prefix}-stderr.log`,
+        ),
         run.stderr.join(''),
+    );
+}
+
+function resolveVSCodeCli(vscodeExecutablePath) {
+    /*
+     * Normally resolveCliArgsFromVSCodeExecutablePath adds the
+     * machine-isolation profile arguments automatically.
+     *
+     * We provide our own short /tmp profile paths, so suppress those
+     * automatically generated arguments to avoid duplicate
+     * --user-data-dir / --extensions-dir options.
+     */
+    return resolveCliArgsFromVSCodeExecutablePath(
+        vscodeExecutablePath,
+        {
+            reuseMachineInstall: true,
+        },
     );
 }
 
@@ -473,7 +533,9 @@ async function installVSIX(
     log(`Installing VSIX: ${VSIX_PATH}`);
 
     if (!existsSync(VSIX_PATH)) {
-        throw new Error(`VSIX does not exist: ${VSIX_PATH}`);
+        throw new Error(
+            `VSIX does not exist: ${VSIX_PATH}`,
+        );
     }
 
     execFileSync(
@@ -499,31 +561,45 @@ async function main() {
         );
     }
 
-    await mkdir(ARTIFACTS_DIR, { recursive: true });
+    await mkdir(
+        ARTIFACTS_DIR,
+        { recursive: true },
+    );
 
     if (!existsSync(VSIX_PATH)) {
-        throw new Error(`VSIX does not exist: ${VSIX_PATH}`);
+        throw new Error(
+            `VSIX does not exist: ${VSIX_PATH}`,
+        );
     }
 
     log(`Testing font: ${TEST_FONT}`);
 
     /*
-     * Keep the profile path deliberately short.
+     * Keep the profile path short.
      *
-     * macOS Electron/VS Code has IPC socket path limits, so using /tmp
-     * avoids the long GitHub Actions workspace path.
+     * macOS/Electron can hit Unix socket path length limits when
+     * profile directories are deeply nested inside GitHub's workspace.
      */
     const userDataDir = await mkdtemp('/tmp/uifc-user-');
-    const extensionsDir = path.join(userDataDir, 'extensions');
+    const extensionsDir = path.join(
+        userDataDir,
+        'extensions',
+    );
 
-    await mkdir(extensionsDir, { recursive: true });
+    await mkdir(
+        extensionsDir,
+        { recursive: true },
+    );
 
-    const vscodeExecutablePath = await downloadAndUnzipVSCode('stable');
+    const vscodeExecutablePath =
+        await downloadAndUnzipVSCode('stable');
 
-    log(`VS Code executable: ${vscodeExecutablePath}`);
+    log(
+        `VS Code executable: ${vscodeExecutablePath}`,
+    );
 
     const [cli, ...cliArgs] =
-        resolveCliArgsFromVSCodeExecutablePath(vscodeExecutablePath);
+        resolveVSCodeCli(vscodeExecutablePath);
 
     await installVSIX(
         cli,
@@ -532,6 +608,10 @@ async function main() {
         extensionsDir,
     );
 
+    /*
+     * patcher.ts exports getTargetFiles(), which is the same target
+     * resolution used by the extension itself.
+     */
     const appRoot = path.resolve(
         path.dirname(vscodeExecutablePath),
         '..',
@@ -540,6 +620,7 @@ async function main() {
     );
 
     const targets = getTargetFiles(appRoot);
+
     const originalContents = new Map();
 
     for (const target of Object.values(targets)) {
@@ -566,7 +647,21 @@ async function main() {
             firstPort,
         );
 
-        firstBrowser = await connectToWorkbench(firstPort);
+        /*
+         * IMPORTANT:
+         *
+         * Pass the actual child process to connectToWorkbench().
+         * This is what fixes the previous:
+         *
+         *   Cannot read properties of undefined
+         *   (reading 'exitCode')
+         *
+         * error.
+         */
+        firstBrowser = await connectToWorkbench(
+            firstPort,
+            firstRun.child,
+        );
 
         const { page } = firstBrowser;
 
@@ -576,9 +671,18 @@ async function main() {
         );
 
         await openCommandPalette(page);
-        await selectFont(page, TEST_FONT);
+
+        await selectFont(
+            page,
+            TEST_FONT,
+        );
+
         await acceptModificationWarning(page);
-        await waitForSuccess(page, TEST_FONT);
+
+        await waitForSuccess(
+            page,
+            TEST_FONT,
+        );
 
         await captureScreenshot(
             page,
@@ -599,8 +703,14 @@ async function main() {
                 .catch(() => undefined);
         }
 
-        await stopVSCode(firstRun?.child);
-        await writeLogs(firstRun, 'first-run');
+        await stopVSCode(
+            firstRun?.child,
+        );
+
+        await writeLogs(
+            firstRun,
+            'first-run',
+        );
     }
 
     let secondRun;
@@ -618,7 +728,10 @@ async function main() {
             secondPort,
         );
 
-        secondBrowser = await connectToWorkbench(secondPort);
+        secondBrowser = await connectToWorkbench(
+            secondPort,
+            secondRun.child,
+        );
 
         const { page } = secondBrowser;
 
@@ -642,22 +755,32 @@ async function main() {
                 .catch(() => undefined);
         }
 
-        await stopVSCode(secondRun?.child);
-        await writeLogs(secondRun, 'second-run');
+        await stopVSCode(
+            secondRun?.child,
+        );
 
-        await rm(userDataDir, {
-            recursive: true,
-            force: true,
-        });
+        await writeLogs(
+            secondRun,
+            'second-run',
+        );
+
+        await rm(
+            userDataDir,
+            {
+                recursive: true,
+                force: true,
+            },
+        );
     }
 }
 
 main().catch(async error => {
     console.error(error);
 
-    await mkdir(ARTIFACTS_DIR, {
-        recursive: true,
-    }).catch(() => undefined);
+    await mkdir(
+        ARTIFACTS_DIR,
+        { recursive: true },
+    ).catch(() => undefined);
 
     process.exitCode = 1;
 });
