@@ -309,10 +309,9 @@ async function connectToWorkbench(run) {
                 } catch (error) {
                     log(
                         `Page not ready yet: ` +
-                        `${
-                            error instanceof Error
-                                ? error.message
-                                : String(error)
+                        `${error instanceof Error
+                            ? error.message
+                            : String(error)
                         }`,
                     );
                 }
@@ -371,6 +370,7 @@ async function waitForFontPicker(
          * placeholder. This avoids depending solely on the
          * Quick Pick title DOM structure.
          */
+
         const fontInput = page.locator(
             '.quick-input-widget input[placeholder*="Choose an installed font"]',
         );
@@ -391,6 +391,7 @@ async function waitForFontPicker(
         );
 
         const inputCount = await inputs.count();
+
         const visibleInputs = [];
 
         for (
@@ -419,8 +420,51 @@ async function waitForFontPicker(
 
         throw new Error(
             'The "Change Font" command did not open the ' +
-            `font picker. Visible Quick Input inputs: ` +
+            'font picker. Visible Quick Input inputs: ' +
             `${JSON.stringify(visibleInputs)}`,
+        );
+    }
+}
+
+async function captureScreenshot(
+    page,
+    filename,
+) {
+    const screenshotPath = path.join(
+        ARTIFACTS_DIR,
+        filename,
+    );
+
+    await page.screenshot({
+        path: screenshotPath,
+        fullPage: false,
+    });
+
+    log(
+        `Screenshot saved: ${screenshotPath}`,
+    );
+}
+
+async function captureFailureScreenshot(
+    page,
+    filename,
+) {
+    if (!page) {
+        return;
+    }
+
+    try {
+        await captureScreenshot(
+            page,
+            filename,
+        );
+    } catch (error) {
+        log(
+            `Could not capture failure screenshot: ` +
+            `${error instanceof Error
+                ? error.message
+                : String(error)
+            }`,
         );
     }
 }
@@ -439,9 +483,17 @@ async function openCommandPalette(page) {
      * in the GitHub macOS runner it opened Quick Open in our
      * previous test, so use the explicit macOS shortcut.
      */
+
     await page.keyboard.press('Meta+Shift+P');
 
     const input = await waitForQuickInput(page);
+
+    await sleep(500);
+
+    await captureScreenshot(
+        page,
+        '02-command-palette-open.png',
+    );
 
     /*
      * Explicitly enter command mode.
@@ -449,6 +501,7 @@ async function openCommandPalette(page) {
      * The ">" prefix tells VS Code to search commands rather than
      * files/symbols. VS Code documents ">" as Command mode.
      */
+
     await input.fill(`>${COMMAND_NAME}`);
 
     await sleep(500);
@@ -458,13 +511,26 @@ async function openCommandPalette(page) {
         `${await input.inputValue()}`,
     );
 
+    await captureScreenshot(
+        page,
+        '03-command-entered.png',
+    );
+
     /*
      * Do not depend on VS Code's internal command-list DOM.
      * The currently filtered command is accepted with Enter.
      */
+
     await page.keyboard.press('Enter');
 
     await waitForFontPicker(page);
+
+    await sleep(500);
+
+    await captureScreenshot(
+        page,
+        '04-font-picker-open.png',
+    );
 }
 
 async function selectFont(
@@ -484,6 +550,7 @@ async function selectFont(
      * Use that stable attribute instead of VS Code's internal
      * .monaco-list-row structure.
      */
+
     const fontInput = page
         .locator(
             '.quick-input-widget input[placeholder*="Choose an installed font"]',
@@ -495,13 +562,28 @@ async function selectFont(
         timeout: 30_000,
     });
 
+    await captureScreenshot(
+        page,
+        '05-font-picker-before-search.png',
+    );
+
     await fontInput.fill(fontName);
 
-    await sleep(500);
+    await sleep(700);
+
+    log(
+        `Font picker input value: ${await fontInput.inputValue()}`,
+    );
+
+    await captureScreenshot(
+        page,
+        '06-font-search-entered.png',
+    );
 
     /*
      * First try the accessible option role.
      */
+
     const escapedFontName = escapeRegExp(
         fontName,
     );
@@ -521,10 +603,22 @@ async function selectFont(
             timeout: 10_000,
         });
 
+        await captureScreenshot(
+            page,
+            '07-font-option-visible.png',
+        );
+
         await option.click();
 
         log(
             `Selected discovered font "${fontName}".`,
+        );
+
+        await sleep(700);
+
+        await captureScreenshot(
+            page,
+            '08-font-selected.png',
         );
 
         return;
@@ -533,16 +627,37 @@ async function selectFont(
     /*
      * Fallback to VS Code Quick Pick keyboard behavior.
      */
+
     log(
         `Could not locate "${fontName}" as an accessible ` +
         'option; using keyboard selection.',
     );
 
+    await captureScreenshot(
+        page,
+        '07-font-option-not-found.png',
+    );
+
     await page.keyboard.press('ArrowDown');
+
+    await sleep(300);
+
+    await captureScreenshot(
+        page,
+        '08-font-keyboard-highlight.png',
+    );
+
     await page.keyboard.press('Enter');
+
+    await sleep(700);
 
     log(
         `Selected font "${fontName}" using keyboard navigation.`,
+    );
+
+    await captureScreenshot(
+        page,
+        '09-font-selected.png',
     );
 }
 
@@ -570,6 +685,11 @@ async function acceptModificationWarning(page) {
         timeout: 20_000,
     });
 
+    await captureScreenshot(
+        page,
+        '10-modification-warning.png',
+    );
+
     const continueButton = page
         .getByText('Continue', {
             exact: true,
@@ -581,10 +701,22 @@ async function acceptModificationWarning(page) {
         timeout: 10_000,
     });
 
+    await captureScreenshot(
+        page,
+        '11-modification-warning-ready.png',
+    );
+
     await continueButton.click();
 
     log(
         'Modification warning accepted.',
+    );
+
+    await sleep(700);
+
+    await captureScreenshot(
+        page,
+        '12-warning-accepted.png',
     );
 }
 
@@ -611,24 +743,12 @@ async function waitForSuccess(
     log(
         'Extension reported the font change successfully.',
     );
-}
 
-async function captureScreenshot(
-    page,
-    filename,
-) {
-    const screenshotPath = path.join(
-        ARTIFACTS_DIR,
-        filename,
-    );
+    await sleep(700);
 
-    await page.screenshot({
-        path: screenshotPath,
-        fullPage: false,
-    });
-
-    log(
-        `Screenshot saved: ${screenshotPath}`,
+    await captureScreenshot(
+        page,
+        '13-font-change-success.png',
     );
 }
 
@@ -737,6 +857,10 @@ async function assertRenderedFont(
                         typeof element.className === 'string'
                             ? element.className
                             : '',
+                    text:
+                        (element.textContent ?? '')
+                            .trim()
+                            .slice(0, 120),
                     fontFamily: computed,
                 });
             }
@@ -759,6 +883,11 @@ async function assertRenderedFont(
         `${result.workbenchFontFamily}`,
     );
 
+    log(
+        `Rendered font matches: ` +
+        `${JSON.stringify(result.matches, null, 2)}`,
+    );
+
     if (result.matches.length === 0) {
         throw new Error(
             `After restart, no visible workbench element uses ` +
@@ -769,6 +898,11 @@ async function assertRenderedFont(
     log(
         `Found ${result.matches.length} rendered element(s) ` +
         `using "${fontName}".`,
+    );
+
+    await captureScreenshot(
+        page,
+        '16-final-rendered-font.png',
     );
 }
 
@@ -805,6 +939,7 @@ function resolveVSCodeCli(
      * arguments from @vscode/test-electron because this test
      * supplies its own short /tmp profile paths.
      */
+
     return resolveCliArgsFromVSCodeExecutablePath(
         vscodeExecutablePath,
         {
@@ -843,6 +978,8 @@ async function installVSIX(
             stdio: 'inherit',
         },
     );
+
+    log('VSIX installation completed.');
 }
 
 async function main() {
@@ -869,12 +1006,17 @@ async function main() {
         `Testing font: ${TEST_FONT}`,
     );
 
+    log(
+        `Artifacts directory: ${ARTIFACTS_DIR}`,
+    );
+
     /*
      * Keep the profile path short.
      *
      * GitHub Actions workspace paths can be deep enough to cause
      * macOS/Electron IPC socket path issues.
      */
+
     const userDataDir = await mkdtemp(
         '/tmp/uifc-user-',
     );
@@ -905,6 +1047,10 @@ async function main() {
             vscodeExecutablePath,
         );
 
+    /*
+     * The same VS Code installation is used for patch verification.
+     */
+
     await installVSIX(
         cli,
         cliArgs,
@@ -915,6 +1061,7 @@ async function main() {
     /*
      * This is the same target resolution used by the extension.
      */
+
     const appRoot = path.resolve(
         path.dirname(vscodeExecutablePath),
         '..',
@@ -965,6 +1112,8 @@ async function main() {
 
         const { page } = firstBrowser;
 
+        await sleep(2_000);
+
         await captureScreenshot(
             page,
             '01-before-change.png',
@@ -990,7 +1139,7 @@ async function main() {
 
         await captureScreenshot(
             page,
-            '02-after-apply.png',
+            '14-after-apply-complete.png',
         );
 
         await assertPatchedFiles(
@@ -999,9 +1148,23 @@ async function main() {
             TEST_FONT,
         );
 
+        await captureScreenshot(
+            page,
+            '15-before-restart.png',
+        );
+
         log(
             'First phase passed.',
         );
+    } catch (error) {
+        if (firstBrowser?.page) {
+            await captureFailureScreenshot(
+                firstBrowser.page,
+                'failure-first-run.png',
+            );
+        }
+
+        throw error;
     } finally {
         if (firstBrowser) {
             await firstBrowser.browser
@@ -1049,7 +1212,7 @@ async function main() {
 
         await captureScreenshot(
             page,
-            '03-after-restart.png',
+            '17-after-restart.png',
         );
 
         await assertRenderedFont(
@@ -1057,9 +1220,23 @@ async function main() {
             TEST_FONT,
         );
 
+        await captureScreenshot(
+            page,
+            '18-test-complete.png',
+        );
+
         log(
             'macOS UI smoke test passed.',
         );
+    } catch (error) {
+        if (secondBrowser?.page) {
+            await captureFailureScreenshot(
+                secondBrowser.page,
+                'failure-second-run.png',
+            );
+        }
+
+        throw error;
     } finally {
         if (secondBrowser) {
             await secondBrowser.browser
