@@ -48,7 +48,7 @@ jobs:
       - name: Run macOS UI smoke test
         env:
           VSIX_PATH: ${{ runner.temp }}/ui-font-changer-for-vscode.vsix
-          MACOS_UI_TEST_FONT: Helvetica
+          MACOS_UI_TEST_FONT: Papyrus
           MACOS_UI_ARTIFACTS_DIR: ${{ github.workspace }}/test-artifacts/macos-ui
         run: npm run test:macos-ui
 

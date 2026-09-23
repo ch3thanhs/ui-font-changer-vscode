@@ -31,7 +31,7 @@ const VSIX_PATH = process.env.VSIX_PATH
     ? path.resolve(process.env.VSIX_PATH)
     : path.resolve('ui-font-changer-for-vscode.vsix');
 
-const TEST_FONT = process.env.MACOS_UI_TEST_FONT ?? 'Helvetica';
+const TEST_FONT = process.env.MACOS_UI_TEST_FONT ?? 'Papyrus';
 
 const COMMAND_NAME = 'Change Font';
 
