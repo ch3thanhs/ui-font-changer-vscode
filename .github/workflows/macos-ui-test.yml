@@ -29,6 +29,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Stop existing VS Code processes
+        run: |
+          pkill -f "/Contents/MacOS/Code" || true
+          pkill -f "Visual Studio Code" || true
+
       - name: Lint
         run: npm run lint
 
@@ -43,10 +48,11 @@ jobs:
       - name: Run macOS UI smoke test
         env:
           VSIX_PATH: ${{ runner.temp }}/ui-font-changer-for-vscode.vsix
+          MACOS_UI_TEST_FONT: Helvetica
           MACOS_UI_ARTIFACTS_DIR: ${{ github.workspace }}/test-artifacts/macos-ui
         run: npm run test:macos-ui
 
-      - name: Upload macOS UI artifacts
+      - name: Upload macOS UI test artifacts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:

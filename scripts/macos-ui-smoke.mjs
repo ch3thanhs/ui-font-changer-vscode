@@ -13,7 +13,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { chromium } from 'playwright';
+import { chromium } from 'playwright-core';
 
 const require = createRequire(import.meta.url);
 
@@ -24,10 +24,15 @@ const {
 
 const { getTargetFiles } = require('../out/patcher.js');
 
-const TEST_FONT = process.env.MACOS_UI_TEST_FONT;
 const ARTIFACTS_DIR = path.resolve(
     process.env.MACOS_UI_ARTIFACTS_DIR ?? 'test-artifacts/macos-ui',
 );
+
+const VSIX_PATH = process.env.VSIX_PATH
+    ? path.resolve(process.env.VSIX_PATH)
+    : path.resolve('ui-font-changer-for-vscode.vsix');
+
+const TEST_FONT = process.env.MACOS_UI_TEST_FONT ?? 'Helvetica';
 
 const COMMAND_NAME = 'UI Font Changer: Change Font';
 
@@ -35,7 +40,11 @@ function log(message) {
     console.log(`[macOS UI smoke] ${message}`);
 }
 
-function getFreePort() {
+async function sleep(ms) {
+    await delay(ms);
+}
+
+async function getFreePort() {
     return new Promise((resolve, reject) => {
         const server = net.createServer();
 
@@ -46,7 +55,7 @@ function getFreePort() {
 
             if (!address || typeof address === 'string') {
                 server.close();
-                reject(new Error('Could not determine an available TCP port.'));
+                reject(new Error('Could not determine a free TCP port.'));
                 return;
             }
 
@@ -63,57 +72,92 @@ function getFreePort() {
     });
 }
 
-async function waitForRemoteDebugging(port, timeoutMs = 60_000) {
+async function waitForCDP(port, child, timeoutMs = 60_000) {
+    const endpoint = `http://127.0.0.1:${port}/json/version`;
     const deadline = Date.now() + timeoutMs;
-    const url = `http://127.0.0.1:${port}/json/version`;
 
     while (Date.now() < deadline) {
+        if (child.exitCode !== null) {
+            throw new Error(
+                `VS Code exited before CDP became available. ` +
+                `exitCode=${child.exitCode}`,
+            );
+        }
+
         try {
-            const response = await fetch(url);
+            const response = await fetch(endpoint);
 
             if (response.ok) {
+                log(`CDP endpoint is available on port ${port}.`);
                 return;
             }
         } catch {
-            // VS Code has not finished starting yet.
+            // VS Code is still starting.
         }
 
-        await delay(250);
+        await sleep(250);
     }
 
-    throw new Error(`VS Code did not expose the Chrome DevTools endpoint on port ${port}.`);
+    throw new Error(
+        `VS Code did not expose the Chrome DevTools endpoint on port ${port}.`,
+    );
 }
 
-async function launchVSCode(executablePath, userDataDir, extensionsDir, port) {
-    const child = spawn(
-        executablePath,
-        [
-            '--user-data-dir',
-            userDataDir,
-            '--extensions-dir',
-            extensionsDir,
-            '--remote-debugging-port',
-            String(port),
-            '--remote-allow-origins=*',
-            '--disable-updates',
-            '--disable-workspace-trust',
-        ],
-        {
-            stdio: ['ignore', 'pipe', 'pipe'],
-            env: {
-                ...process.env,
-                ELECTRON_ENABLE_LOGGING: '1',
-            },
+function launchVSCode(
+    executablePath,
+    userDataDir,
+    extensionsDir,
+    port,
+) {
+    const args = [
+        '--enable-smoke-test-driver',
+        '--disable-workspace-trust',
+        '--disable-updates',
+        '--skip-welcome',
+        '--skip-release-notes',
+        `--remote-debugging-port=${port}`,
+        `--user-data-dir=${userDataDir}`,
+        `--extensions-dir=${extensionsDir}`,
+        '--new-window',
+    ];
+
+    log(`Launching VS Code: ${executablePath}`);
+    log(`Arguments: ${args.join(' ')}`);
+
+    const child = spawn(executablePath, args, {
+        cwd: process.cwd(),
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+            ...process.env,
+            ELECTRON_ENABLE_LOGGING: '1',
         },
-    );
+    });
 
     const stdout = [];
     const stderr = [];
 
-    child.stdout?.on('data', chunk => stdout.push(chunk.toString()));
-    child.stderr?.on('data', chunk => stderr.push(chunk.toString()));
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
 
-    await waitForRemoteDebugging(port);
+    child.stdout?.on('data', data => {
+        const text = data.toString();
+        stdout.push(text);
+        process.stdout.write(`[VS Code stdout] ${text}`);
+    });
+
+    child.stderr?.on('data', data => {
+        const text = data.toString();
+        stderr.push(text);
+        process.stderr.write(`[VS Code stderr] ${text}`);
+    });
+
+    child.once('error', error => {
+        console.error(`[VS Code spawn error] ${error.stack ?? error}`);
+    });
+
+    child.once('exit', (code, signal) => {
+        log(`VS Code exited: code=${code}, signal=${signal}`);
+    });
 
     return {
         child,
@@ -127,11 +171,14 @@ async function stopVSCode(child) {
         return;
     }
 
+    log('Stopping VS Code...');
+
     child.kill('SIGTERM');
 
     await new Promise(resolve => {
         const timer = setTimeout(() => {
             if (child.exitCode === null) {
+                log('VS Code did not exit cleanly; sending SIGKILL.');
                 child.kill('SIGKILL');
             }
             resolve();
@@ -145,43 +192,51 @@ async function stopVSCode(child) {
 }
 
 async function connectToWorkbench(port) {
+    await waitForCDP(port);
+
     const browser = await chromium.connectOverCDP(
         `http://127.0.0.1:${port}`,
     );
 
-    const context = browser.contexts()[0];
-
-    if (!context) {
-        await browser.close();
-        throw new Error('Playwright connected to VS Code but found no browser context.');
-    }
-
-    const deadline = Date.now() + 30_000;
+    const deadline = Date.now() + 60_000;
 
     while (Date.now() < deadline) {
-        for (const page of context.pages()) {
-            try {
-                if (await page.locator('.monaco-workbench').count()) {
-                    await page.bringToFront();
-                    await page
-                        .locator('.monaco-workbench')
-                        .waitFor({ state: 'visible', timeout: 5_000 });
+        const pages = browser.contexts().flatMap(
+            context => context.pages(),
+        );
 
-                    return { browser, page };
-                }
-            } catch {
-                // A page can disappear while VS Code is initializing.
+        for (const page of pages) {
+            const hasDriver = await page.evaluate(() => (
+                typeof globalThis.driver?.whenWorkbenchRestored === 'function'
+            )).catch(() => false);
+
+            if (!hasDriver) {
+                continue;
             }
+
+            await page.evaluate(
+                () => globalThis.driver.whenWorkbenchRestored(),
+            );
+
+            await page.bringToFront();
+
+            return {
+                browser,
+                page,
+            };
         }
 
-        await delay(250);
+        await sleep(500);
     }
 
     await browser.close();
-    throw new Error('Could not find the VS Code workbench page.');
+
+    throw new Error(
+        'Timed out waiting for the VS Code workbench smoke-test driver.',
+    );
 }
 
-async function getQuickInput(page, timeout = 30_000) {
+async function waitForQuickInput(page, timeout = 30_000) {
     const input = page.locator('.quick-input-widget input').last();
 
     await input.waitFor({
@@ -193,32 +248,33 @@ async function getQuickInput(page, timeout = 30_000) {
 }
 
 async function openCommandPalette(page) {
-    // F1 opens the Command Palette on macOS without depending on
-    // a particular keyboard-layout shortcut.
+    log('Opening Command Palette...');
+
     await page.keyboard.press('F1');
 
-    const input = await getQuickInput(page);
+    const input = await waitForQuickInput(page);
 
     await input.fill(COMMAND_NAME);
-    await delay(200);
 
-    const matchingCommand = page
+    await sleep(300);
+
+    const command = page
         .locator('.quick-input-widget .monaco-list-row')
         .filter({ hasText: COMMAND_NAME })
         .first();
 
-    await matchingCommand.waitFor({
+    await command.waitFor({
         state: 'visible',
         timeout: 10_000,
     });
 
-    await page.keyboard.press('Enter');
+    await command.click();
 }
 
-async function chooseFont(page, fontName) {
-    const input = page.locator(
-        '.quick-input-widget input[placeholder="Choose an installed font or enter a custom font"]',
-    ).last();
+async function selectFont(page, fontName) {
+    log(`Looking for discovered font "${fontName}"...`);
+
+    const input = page.locator('.quick-input-widget input').last();
 
     await input.waitFor({
         state: 'visible',
@@ -226,22 +282,32 @@ async function chooseFont(page, fontName) {
     });
 
     await input.fill(fontName);
-    await delay(300);
 
-    const matchingFont = page
+    await sleep(500);
+
+    const fontRow = page
         .locator('.quick-input-widget .monaco-list-row')
         .filter({ hasText: fontName })
         .first();
 
-    await matchingFont.waitFor({
+    if (await fontRow.count() === 0) {
+        throw new Error(
+            `Font "${fontName}" was not discovered by the extension. ` +
+            `This test intentionally requires the font to appear in the installed-font list.`,
+        );
+    }
+
+    await fontRow.waitFor({
         state: 'visible',
         timeout: 10_000,
     });
 
-    await page.keyboard.press('Enter');
+    await fontRow.click();
 }
 
 async function acceptModificationWarning(page) {
+    log('Waiting for the modification warning...');
+
     const warning = page.getByText(
         'UI Font Changer modifies VS Code installation files.',
         { exact: false },
@@ -252,67 +318,23 @@ async function acceptModificationWarning(page) {
         timeout: 20_000,
     });
 
-    const continueButton = page.getByText('Continue', { exact: true }).last();
+    const continueButton = page
+        .getByText('Continue', { exact: true })
+        .last();
 
-    if (await continueButton.count()) {
-        await continueButton.click();
-    } else {
-        // Continue is the first/default action in this modal.
-        await page.keyboard.press('Enter');
-    }
+    await continueButton.click();
 }
 
-function getInstalledMacFont() {
-    let stdout;
-
-    try {
-        stdout = execFileSync(
-            'fc-list',
-            [':', 'family'],
-            {
-                encoding: 'utf8',
-                timeout: 15_000,
-                stdio: ['ignore', 'pipe', 'pipe'],
-            },
-        );
-    } catch (error) {
-        throw new Error(
-            'macOS UI test requires "fc-list", because the extension uses fc-list to enumerate fonts on macOS. ' +
-            'The GitHub runner does not appear to have it available.',
-            { cause: error },
-        );
-    }
-
-    const candidates = stdout
-        .split(/\r?\n/)
-        .flatMap(line => line.split(','))
-        .map(value =>
-            value
-                .trim()
-                .replace(/^"|"$/g, ''),
-        )
-        .filter(value =>
-            value.length > 1 &&
-            !value.startsWith('.'),
-        );
-
-    const unique = [...new Set(candidates)];
-
-    if (unique.length === 0) {
-        throw new Error('fc-list returned no usable installed macOS fonts.');
-    }
-
-    return unique[0];
-}
-
-function getMacOSAppRoot(vscodeExecutablePath) {
-    // .../Visual Studio Code.app/Contents/MacOS/Code
-    return path.resolve(
-        path.dirname(vscodeExecutablePath),
-        '..',
-        'Resources',
-        'app',
+async function waitForSuccess(page, fontName) {
+    const message = page.getByText(
+        `Font changed to ${fontName}.`,
+        { exact: false },
     );
+
+    await message.waitFor({
+        state: 'visible',
+        timeout: 60_000,
+    });
 }
 
 async function captureScreenshot(page, filename) {
@@ -322,32 +344,55 @@ async function captureScreenshot(page, filename) {
     });
 }
 
-async function assertPatchedFiles(targets, originals, fontName) {
+async function assertPatchedFiles(
+    targets,
+    originalContents,
+    fontName,
+) {
     const existingTargets = Object.values(targets).filter(existsSync);
 
     if (existingTargets.length === 0) {
-        throw new Error('No VS Code files targeted by the extension were found.');
+        throw new Error(
+            'None of the expected VS Code UI files exist.',
+        );
     }
+
+    let changedCount = 0;
 
     for (const target of existingTargets) {
-        const original = originals.get(target);
+        const original = originalContents.get(target);
         const updated = await readFile(target, 'utf8');
 
-        if (updated === original) {
-            throw new Error(
-                `Expected ${path.basename(target)} to change after applying the font.`,
-            );
+        if (original === undefined) {
+            continue;
         }
 
-        if (!updated.toLocaleLowerCase().includes(fontName.toLocaleLowerCase())) {
+        if (updated !== original) {
+            changedCount += 1;
+        }
+
+        if (!updated.toLocaleLowerCase().includes(
+            fontName.toLocaleLowerCase(),
+        )) {
             throw new Error(
-                `Expected ${path.basename(target)} to contain "${fontName}" after patching.`,
+                `${path.basename(target)} does not contain "${fontName}" ` +
+                'after the extension applied the change.',
             );
         }
     }
+
+    if (changedCount === 0) {
+        throw new Error(
+            'The extension reported success, but none of the VS Code files changed.',
+        );
+    }
+
+    log(`Verified ${changedCount} patched VS Code UI file(s).`);
 }
 
 async function assertRenderedFont(page, fontName) {
+    log(`Checking rendered UI for "${fontName}"...`);
+
     const result = await page.evaluate(font => {
         const wanted = font.toLocaleLowerCase();
 
@@ -366,7 +411,7 @@ async function assertRenderedFont(page, fontName) {
 
             if (computed.toLocaleLowerCase().includes(wanted)) {
                 matches.push({
-                    element: element.tagName,
+                    tag: element.tagName,
                     className: typeof element.className === 'string'
                         ? element.className
                         : '',
@@ -382,86 +427,129 @@ async function assertRenderedFont(page, fontName) {
         return {
             matches,
             workbenchFontFamily: getComputedStyle(
-                document.querySelector('.monaco-workbench') ?? document.body,
+                document.querySelector('.monaco-workbench')
+                    ?? document.body,
             ).fontFamily,
         };
     }, fontName);
 
-    log(`Rendered workbench font-family: ${result.workbenchFontFamily}`);
+    log(
+        `Workbench computed font-family: ${result.workbenchFontFamily}`,
+    );
 
     if (result.matches.length === 0) {
         throw new Error(
-            `After restarting VS Code, no rendered UI element used "${fontName}".`,
+            `After restart, no visible workbench element uses "${fontName}".`,
         );
     }
 
     log(
-        `Found ${result.matches.length} rendered UI element(s) using "${fontName}".`,
+        `Found ${result.matches.length} rendered element(s) using "${fontName}".`,
     );
 }
 
-async function main() {
-    if (process.platform !== 'darwin') {
-        throw new Error('This smoke test must run on macOS.');
+async function writeLogs(run, prefix) {
+    if (!run) {
+        return;
     }
 
-    await mkdir(ARTIFACTS_DIR, { recursive: true });
-
-    const vsixPath =
-        process.env.VSIX_PATH ??
-        path.resolve('ui-font-changer-for-vscode.vsix');
-
-    if (!existsSync(vsixPath)) {
-        throw new Error(`VSIX not found: ${vsixPath}`);
-    }
-
-    const fontName = TEST_FONT ?? getInstalledMacFont();
-
-    log(`Testing with installed font: ${fontName}`);
-
-    const vscodeExecutablePath = await downloadAndUnzipVSCode('stable');
-    const appRoot = getMacOSAppRoot(vscodeExecutablePath);
-    const targets = getTargetFiles(appRoot);
-
-    log(`VS Code executable: ${vscodeExecutablePath}`);
-    log(`VS Code app root: ${appRoot}`);
-
-    const originals = new Map();
-
-    for (const target of Object.values(targets)) {
-        if (existsSync(target)) {
-            originals.set(target, await readFile(target, 'utf8'));
-        }
-    }
-
-    const userDataDir = await mkdtemp(
-        path.join(os.tmpdir(), 'ui-font-changer-macos-ui-'),
+    await writeFile(
+        path.join(ARTIFACTS_DIR, `${prefix}-stdout.log`),
+        run.stdout.join(''),
     );
-    const extensionsDir = path.join(userDataDir, 'extensions');
 
-    await mkdir(extensionsDir, { recursive: true });
+    await writeFile(
+        path.join(ARTIFACTS_DIR, `${prefix}-stderr.log`),
+        run.stderr.join(''),
+    );
+}
 
-    const [cli, ...cliArgs] =
-        resolveCliArgsFromVSCodeExecutablePath(vscodeExecutablePath);
+async function installVSIX(
+    cli,
+    cliArgs,
+    userDataDir,
+    extensionsDir,
+) {
+    log(`Installing VSIX: ${VSIX_PATH}`);
 
-    log('Installing the test VSIX into an isolated VS Code profile...');
+    if (!existsSync(VSIX_PATH)) {
+        throw new Error(`VSIX does not exist: ${VSIX_PATH}`);
+    }
 
     execFileSync(
         cli,
         [
             ...cliArgs,
-            '--user-data-dir',
-            userDataDir,
-            '--extensions-dir',
-            extensionsDir,
+            `--user-data-dir=${userDataDir}`,
+            `--extensions-dir=${extensionsDir}`,
             '--install-extension',
-            vsixPath,
+            VSIX_PATH,
             '--force',
         ],
         {
             stdio: 'inherit',
         },
     );
+}
+
+async function main() {
+    if (process.platform !== 'darwin') {
+        throw new Error(
+            'macos-ui-smoke.mjs must be run on macOS.',
+        );
+    }
+
+    await mkdir(ARTIFACTS_DIR, { recursive: true });
+
+    if (!existsSync(VSIX_PATH)) {
+        throw new Error(`VSIX does not exist: ${VSIX_PATH}`);
+    }
+
+    log(`Testing font: ${TEST_FONT}`);
+
+    /*
+     * Keep the profile path deliberately short.
+     *
+     * macOS Electron/VS Code has IPC socket path limits, so using /tmp
+     * avoids the long GitHub Actions workspace path.
+     */
+    const userDataDir = await mkdtemp('/tmp/uifc-user-');
+    const extensionsDir = path.join(userDataDir, 'extensions');
+
+    await mkdir(extensionsDir, { recursive: true });
+
+    const vscodeExecutablePath = await downloadAndUnzipVSCode('stable');
+
+    log(`VS Code executable: ${vscodeExecutablePath}`);
+
+    const [cli, ...cliArgs] =
+        resolveCliArgsFromVSCodeExecutablePath(vscodeExecutablePath);
+
+    await installVSIX(
+        cli,
+        cliArgs,
+        userDataDir,
+        extensionsDir,
+    );
+
+    const appRoot = path.resolve(
+        path.dirname(vscodeExecutablePath),
+        '..',
+        'Resources',
+        'app',
+    );
+
+    const targets = getTargetFiles(appRoot);
+    const originalContents = new Map();
+
+    for (const target of Object.values(targets)) {
+        if (existsSync(target)) {
+            originalContents.set(
+                target,
+                await readFile(target, 'utf8'),
+            );
+        }
+    }
 
     let firstRun;
     let firstBrowser;
@@ -469,9 +557,9 @@ async function main() {
     try {
         const firstPort = await getFreePort();
 
-        log('Launching VS Code for the first UI interaction...');
+        log('Launching VS Code for UI test...');
 
-        firstRun = await launchVSCode(
+        firstRun = launchVSCode(
             vscodeExecutablePath,
             userDataDir,
             extensionsDir,
@@ -482,49 +570,38 @@ async function main() {
 
         const { page } = firstBrowser;
 
-        await captureScreenshot(page, '01-before-change.png');
-
-        log('Opening the Command Palette...');
-        await openCommandPalette(page);
-
-        log('Selecting an installed font...');
-        await chooseFont(page, fontName);
-
-        log('Accepting the extension modification warning...');
-        await acceptModificationWarning(page);
-
-        const successMessage = page.getByText(
-            `Font changed to ${fontName}`,
-            { exact: false },
+        await captureScreenshot(
+            page,
+            '01-before-change.png',
         );
 
-        await successMessage.waitFor({
-            state: 'visible',
-            timeout: 60_000,
-        });
+        await openCommandPalette(page);
+        await selectFont(page, TEST_FONT);
+        await acceptModificationWarning(page);
+        await waitForSuccess(page, TEST_FONT);
 
-        await captureScreenshot(page, '02-after-apply-before-restart.png');
+        await captureScreenshot(
+            page,
+            '02-after-apply.png',
+        );
 
-        await assertPatchedFiles(targets, originals, fontName);
+        await assertPatchedFiles(
+            targets,
+            originalContents,
+            TEST_FONT,
+        );
 
-        log('The extension successfully patched the downloaded VS Code installation.');
+        log('First phase passed.');
     } finally {
         if (firstBrowser) {
-            await firstBrowser.browser.close().catch(() => {});
+            await firstBrowser.browser
+                .close()
+                .catch(() => undefined);
         }
 
         await stopVSCode(firstRun?.child);
+        await writeLogs(firstRun, 'first-run');
     }
-
-    await writeFile(
-        path.join(ARTIFACTS_DIR, 'first-run-stdout.log'),
-        firstRun?.stdout?.join('') ?? '',
-    );
-
-    await writeFile(
-        path.join(ARTIFACTS_DIR, 'first-run-stderr.log'),
-        firstRun?.stderr?.join('') ?? '',
-    );
 
     let secondRun;
     let secondBrowser;
@@ -532,9 +609,9 @@ async function main() {
     try {
         const secondPort = await getFreePort();
 
-        log('Restarting the same patched VS Code installation...');
+        log('Restarting VS Code...');
 
-        secondRun = await launchVSCode(
+        secondRun = launchVSCode(
             vscodeExecutablePath,
             userDataDir,
             extensionsDir,
@@ -545,29 +622,28 @@ async function main() {
 
         const { page } = secondBrowser;
 
-        await delay(2_000);
+        await sleep(2_000);
 
-        await captureScreenshot(page, '03-after-restart.png');
+        await captureScreenshot(
+            page,
+            '03-after-restart.png',
+        );
 
-        await assertRenderedFont(page, fontName);
+        await assertRenderedFont(
+            page,
+            TEST_FONT,
+        );
 
         log('macOS UI smoke test passed.');
     } finally {
         if (secondBrowser) {
-            await secondBrowser.browser.close().catch(() => {});
+            await secondBrowser.browser
+                .close()
+                .catch(() => undefined);
         }
 
         await stopVSCode(secondRun?.child);
-
-        await writeFile(
-            path.join(ARTIFACTS_DIR, 'second-run-stdout.log'),
-            secondRun?.stdout?.join('') ?? '',
-        );
-
-        await writeFile(
-            path.join(ARTIFACTS_DIR, 'second-run-stderr.log'),
-            secondRun?.stderr?.join('') ?? '',
-        );
+        await writeLogs(secondRun, 'second-run');
 
         await rm(userDataDir, {
             recursive: true,
@@ -579,9 +655,9 @@ async function main() {
 main().catch(async error => {
     console.error(error);
 
-    // Keep the artifact directory even on failure so screenshots/logs
-    // produced before the failure can be uploaded by GitHub Actions.
-    await mkdir(ARTIFACTS_DIR, { recursive: true }).catch(() => {});
+    await mkdir(ARTIFACTS_DIR, {
+        recursive: true,
+    }).catch(() => undefined);
 
     process.exitCode = 1;
 });
