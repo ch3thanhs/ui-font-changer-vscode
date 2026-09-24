@@ -37,13 +37,19 @@ Choose any font installed on your system, apply it with a command, and restart V
 # JetBrains Mono
 
 <p align="center">
-    <img src="./images/samples/jetbrains_mono.png" alt="VS Code UI rendered with Inter font">
+    <img src="./images/samples/jetbrains_mono.png" alt="VS Code UI rendered with JetBrains Mono font">
 </p>
 
 # Atkinson Hyperlegible
 
 <p align="center">
-    <img src="./images/samples/atkinson_hyperlegible.png" alt="VS Code UI rendered with Inter font">
+    <img src="./images/samples/atkinson_hyperlegible.png" alt="VS Code UI rendered with Atkinson Hyperlegible font">
+</p>
+
+# Papyrus
+
+<p align="center">
+    <img src="./images/samples/papyrus.png" alt="VS Code UI rendered with Papyrus font">
 </p>
 
 ## ✨ Features
