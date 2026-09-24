@@ -26,6 +26,26 @@ Choose any font installed on your system, apply it with a command, and restart V
 
 ---
 
+## Samples
+
+# Inter
+
+<p align="center">
+    <img src="./images/samples/inter.png" alt="VS Code UI rendered with Inter font">
+</p>
+
+# JetBrains Mono
+
+<p align="center">
+    <img src="./images/samples/jetbrains_mono.png" alt="VS Code UI rendered with Inter font">
+</p>
+
+# Atkinson Hyperlegible
+
+<p align="center">
+    <img src="./images/samples/atkinson_hyperlegible.png" alt="VS Code UI rendered with Inter font">
+</p>
+
 ## ✨ Features
 
 * Change the VS Code UI font with a single command
