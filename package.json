@@ -79,7 +79,7 @@
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "4.0.0",
-    "eslint": "^8.54.0",
+    "eslint": "^10.11.0",
     "typescript": "^5.3.2"
   },
   "overrides": {
