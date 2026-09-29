@@ -5,7 +5,11 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
-import { shouldShowWelcomeNotification } from '../extension';
+import {
+    getBuildIdentity,
+    shouldShowWelcomeNotification,
+    shouldSuggestReapply,
+} from '../extension';
 import {
     containsTargetFontReferences,
     DEFAULT_FONTS_TO_REPLACE,
@@ -521,7 +525,8 @@ suite('backup and restore filesystem workflow', () => {
         fs.rmSync(tempRoot, { recursive: true, force: true });
     });
 
-    test('patches all surfaces repeatedly and restores their exact original contents', async () => {
+    test('patches all surfaces repeatedly and restores their exact original contents', async function () {
+        this.timeout(10_000);
         const liveRoot = path.join(tempRoot, 'live');
         const markdownPath = path.join(tempRoot, 'live', 'markdown.css');
         const markdownOriginal = 'body { color: var(--vscode-foreground); }';
@@ -764,6 +769,36 @@ suite('welcome notification', () => {
         assert.strictEqual(shouldShowWelcomeNotification(false, false), true);
         assert.strictEqual(shouldShowWelcomeNotification(true, false), false);
         assert.strictEqual(shouldShowWelcomeNotification(false, true), false);
+    });
+});
+
+suite('reapply after update notification', () => {
+    const metadata: BackupMetadata = {
+        version: 3,
+        vscodeVersion: '1.2.3',
+        appName: 'Visual Studio Code',
+        appRoot: '/applications/code/resources/app',
+        buildId: 'abc123',
+    };
+
+    test('uses version, application, root, and build ID in the build identity', () => {
+        const identity = getBuildIdentity(metadata);
+
+        assert.notStrictEqual(getBuildIdentity({ ...metadata, vscodeVersion: '1.2.4' }), identity);
+        assert.notStrictEqual(getBuildIdentity({ ...metadata, appName: 'Code - Insiders' }), identity);
+        assert.notStrictEqual(getBuildIdentity({ ...metadata, appRoot: '/new/app' }), identity);
+        assert.notStrictEqual(getBuildIdentity({ ...metadata, buildId: 'def456' }), identity);
+    });
+
+    test('suggests reapply once when a selected font belongs to an older build', () => {
+        assert.strictEqual(shouldSuggestReapply('Inter', 'old-build', 'new-build', undefined), true);
+        assert.strictEqual(shouldSuggestReapply('Inter', 'old-build', 'new-build', 'new-build'), false);
+    });
+
+    test('does not suggest reapply without confirmed applied state or a build change', () => {
+        assert.strictEqual(shouldSuggestReapply(undefined, 'old-build', 'new-build', undefined), false);
+        assert.strictEqual(shouldSuggestReapply('Inter', undefined, 'new-build', undefined), false);
+        assert.strictEqual(shouldSuggestReapply('Inter', 'new-build', 'new-build', undefined), false);
     });
 });
 

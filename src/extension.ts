@@ -28,10 +28,33 @@ export * from './patcher';
 
 const CURRENT_FONT_KEY = 'currentFont';
 const RECENT_FONTS_KEY = 'recentFonts';
+const LAST_APPLIED_BUILD_KEY = 'lastAppliedBuild';
+const LAST_REAPPLY_PROMPT_BUILD_KEY = 'lastReapplyPromptBuild';
 const MODIFICATION_NOTICE_ACCEPTED_KEY = 'modificationNoticeAccepted';
 const WELCOME_NOTIFICATION_SHOWN_KEY = 'welcomeNotificationShown';
 const MAX_RECENT_FONTS = 5;
 const DOCUMENTATION_URL = 'https://github.com/ch3thanhs/ui-font-changer-vscode#readme';
+
+export function getBuildIdentity(metadata: BackupMetadata): string {
+    return [
+        metadata.vscodeVersion,
+        metadata.appName,
+        metadata.appRoot,
+        metadata.buildId,
+    ].join('\u0000');
+}
+
+export function shouldSuggestReapply(
+    currentFont: string | undefined,
+    lastAppliedBuild: string | undefined,
+    currentBuild: string,
+    lastPromptedBuild: string | undefined,
+): boolean {
+    return !!currentFont
+        && !!lastAppliedBuild
+        && lastAppliedBuild !== currentBuild
+        && lastPromptedBuild !== currentBuild;
+}
 
 async function showUserFacingError(error: unknown): Promise<void> {
     const message = patcher.toUserFacingErrorMessage(error);
@@ -90,13 +113,19 @@ async function promptForCustomFont(installedFonts: ReadonlyArray<string>): Promi
     return selectedAction === useAnywayAction ? fontName : undefined;
 }
 
-async function rememberFontSelection(context: vscode.ExtensionContext, fontName: string): Promise<void> {
+async function rememberFontSelection(
+    context: vscode.ExtensionContext,
+    fontName: string,
+    buildIdentity: string,
+): Promise<void> {
     const recentFonts = context.globalState.get<string[]>(RECENT_FONTS_KEY, []);
     const updatedRecentFonts = prioritizeFontNames([], fontName, recentFonts).slice(0, MAX_RECENT_FONTS);
 
     await Promise.all([
         context.globalState.update(CURRENT_FONT_KEY, fontName),
         context.globalState.update(RECENT_FONTS_KEY, updatedRecentFonts),
+        context.globalState.update(LAST_APPLIED_BUILD_KEY, buildIdentity),
+        context.globalState.update(LAST_REAPPLY_PROMPT_BUILD_KEY, undefined),
     ]);
 }
 
@@ -105,6 +134,7 @@ async function migrateLegacyFontSelection(
     targetPath: string,
     backupPath: string,
     pathSafetyRoots: patcher.PathSafetyRoots,
+    buildIdentity: string,
 ): Promise<void> {
     await patcher.validatePathWithinRoot(targetPath, pathSafetyRoots.targetRoot, 'a VS Code UI file');
     await patcher.validatePathWithinRoot(backupPath, pathSafetyRoots.backupRoot, 'a backup file');
@@ -121,7 +151,7 @@ async function migrateLegacyFontSelection(
     const currentContent = await fs.readFile(targetPath, 'utf-8');
     const legacyFontName = detectPatchedMarkdownFont(backupContent, currentContent);
     if (legacyFontName) {
-        await rememberFontSelection(context, legacyFontName);
+        await rememberFontSelection(context, legacyFontName, buildIdentity);
     }
 }
 
@@ -256,7 +286,7 @@ async function applyFont(
         }
 
         await patcher.applyWritesTransactionally(plannedWrites, pathSafetyRoots.targetRoot);
-        await rememberFontSelection(context, fontName);
+        await rememberFontSelection(context, fontName, getBuildIdentity(currentMetadata));
         return summarizeSurfaceUpdates(targets, plannedWrites);
     });
 }
@@ -295,6 +325,22 @@ async function offerToCloseVsCode(message: string, showAsWarning: boolean = fals
 
 export function shouldShowWelcomeNotification(wasShown: boolean, hasExistingBackups: boolean): boolean {
     return !wasShown && !hasExistingBackups;
+}
+
+async function showReapplyAfterUpdateNotification(
+    context: vscode.ExtensionContext,
+    fontName: string,
+    currentBuildIdentity: string,
+): Promise<void> {
+    await context.globalState.update(LAST_REAPPLY_PROMPT_BUILD_KEY, currentBuildIdentity);
+    const reapplyAction = 'Reapply Font';
+    const selectedAction = await vscode.window.showInformationMessage(
+        `VS Code was updated. Reapply the UI font "${fontName}"?`,
+        reapplyAction,
+    );
+    if (selectedAction === reapplyAction) {
+        await vscode.commands.executeCommand('ui-font-changer-for-vscode.reapply');
+    }
 }
 
 async function showWelcomeNotification(
@@ -339,6 +385,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.env.appName,
         vscode.env.appRoot,
     );
+    const currentBuildIdentity = getBuildIdentity(currentMetadata);
     const namesToReplace = getDefaultFontsToReplaceForPlatform(process.platform);
     const runOperation = createOperationQueue();
 
@@ -376,7 +423,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const changeDisposable = vscode.commands.registerCommand('ui-font-changer-for-vscode.change', async () => {
         let currentFont: string | undefined;
         try {
-            await migrateLegacyFontSelection(context, targets.markdownCss, backups.markdownCss, pathSafetyRoots);
+            await migrateLegacyFontSelection(
+                context,
+                targets.markdownCss,
+                backups.markdownCss,
+                pathSafetyRoots,
+                currentBuildIdentity,
+            );
             currentFont = await patcher.detectAppliedMarkdownFont(
                 targets.markdownCss,
                 backups,
@@ -396,7 +449,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     const reapplyDisposable = vscode.commands.registerCommand('ui-font-changer-for-vscode.reapply', async () => {
         try {
-            await migrateLegacyFontSelection(context, targets.markdownCss, backups.markdownCss, pathSafetyRoots);
+            await migrateLegacyFontSelection(
+                context,
+                targets.markdownCss,
+                backups.markdownCss,
+                pathSafetyRoots,
+                currentBuildIdentity,
+            );
         } catch (error) {
             await showUserFacingError(error);
             return;
@@ -438,7 +497,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 }
 
                 await patcher.applyWritesTransactionally(plannedWrites, pathSafetyRoots.targetRoot);
-                await context.globalState.update(CURRENT_FONT_KEY, undefined);
+                await Promise.all([
+                    context.globalState.update(CURRENT_FONT_KEY, undefined),
+                    context.globalState.update(LAST_APPLIED_BUILD_KEY, undefined),
+                    context.globalState.update(LAST_REAPPLY_PROMPT_BUILD_KEY, undefined),
+                ]);
                 return summarizeSurfaceUpdates(targets, plannedWrites);
             });
 
@@ -460,12 +523,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     context.subscriptions.push(changeDisposable, reapplyDisposable, restoreDisposable);
     let hasExistingBackups = true;
+    let canShowStartupNotification = true;
     try {
         hasExistingBackups = await patcher.hasAnyBackupFiles(backups, pathSafetyRoots);
     } catch (error) {
+        canShowStartupNotification = false;
         await showUserFacingError(error);
     }
-    void showWelcomeNotification(context, hasExistingBackups);
+
+    const currentFont = context.globalState.get<string>(CURRENT_FONT_KEY);
+    let lastAppliedBuild = context.globalState.get<string>(LAST_APPLIED_BUILD_KEY);
+    if (currentFont && !lastAppliedBuild) {
+        lastAppliedBuild = currentBuildIdentity;
+        await context.globalState.update(LAST_APPLIED_BUILD_KEY, currentBuildIdentity);
+    }
+
+    const shouldPromptToReapply = shouldSuggestReapply(
+        currentFont,
+        lastAppliedBuild,
+        currentBuildIdentity,
+        context.globalState.get<string>(LAST_REAPPLY_PROMPT_BUILD_KEY),
+    );
+    if (canShowStartupNotification && shouldPromptToReapply && currentFont) {
+        void showReapplyAfterUpdateNotification(context, currentFont, currentBuildIdentity);
+    } else {
+        void showWelcomeNotification(context, hasExistingBackups);
+    }
 }
 
 export function deactivate() {}
