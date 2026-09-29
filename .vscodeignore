@@ -3,6 +3,7 @@
 .github/**
 src/**
 scripts/**
+node_modules/**
 out/test/**
 images/*.svg
 .gitignore
