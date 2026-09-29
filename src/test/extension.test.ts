@@ -28,6 +28,7 @@ import {
     applyWritesTransactionally,
     type BackupFiles,
     type BackupMetadata,
+    detectAppliedMarkdownFont,
     finalizeBackupSet,
     getElevationHint,
     getTargetFiles,
@@ -371,6 +372,40 @@ suite('backup and restore filesystem workflow', () => {
             assert.strictEqual(fs.readFileSync(file.target, 'utf-8'), file.original);
         });
         assert.strictEqual(fs.readFileSync(markdownPath, 'utf-8'), markdownOriginal);
+    });
+
+    test('detects only a font still applied to the current VS Code build', async () => {
+        const markdownPath = path.join(tempRoot, 'live', 'markdown.css');
+        const markdownOriginal = 'body { color: var(--vscode-foreground); }';
+        fs.mkdirSync(path.dirname(markdownPath), { recursive: true });
+        fs.writeFileSync(markdownPath, markdownOriginal);
+
+        await prepareBackupSet(backups, currentMetadata);
+        const write = await planMarkdownPatchWrite(markdownPath, backups.markdownCss, 'Inter');
+        assert.ok(write);
+        await finalizeBackupSet(backups);
+        await applyWritesTransactionally([write]);
+
+        assert.strictEqual(
+            await detectAppliedMarkdownFont(markdownPath, backups, currentMetadata),
+            'Inter',
+        );
+
+        fs.writeFileSync(markdownPath, markdownOriginal);
+        assert.strictEqual(
+            await detectAppliedMarkdownFont(markdownPath, backups, currentMetadata),
+            undefined,
+        );
+
+        await applyWritesTransactionally([write]);
+        assert.strictEqual(
+            await detectAppliedMarkdownFont(
+                markdownPath,
+                backups,
+                { ...currentMetadata, buildId: 'updated-build' },
+            ),
+            undefined,
+        );
     });
 
     test('does not recreate a missing backup from patched live content', async () => {

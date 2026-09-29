@@ -147,13 +147,15 @@ async function confirmFirstModification(context: vscode.ExtensionContext): Promi
     return true;
 }
 
-async function pickFontName(context: vscode.ExtensionContext): Promise<string | undefined> {
+async function pickFontName(
+    context: vscode.ExtensionContext,
+    currentFont: string | undefined,
+): Promise<string | undefined> {
     const installedFonts = await vscode.window.withProgress({
         location: vscode.ProgressLocation.Notification,
         title: 'Finding installed fonts...',
         cancellable: false,
     }, () => getInstalledFonts());
-    const currentFont = context.globalState.get<string>(CURRENT_FONT_KEY);
     const recentFonts = context.globalState.get<string[]>(RECENT_FONTS_KEY, []);
 
     if (installedFonts.length === 0 && !currentFont && recentFonts.length === 0) {
@@ -349,7 +351,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     const changeDisposable = vscode.commands.registerCommand('ui-font-changer-for-vscode.change', async () => {
         await migrateLegacyFontSelection(context, targets.markdownCss, backups.markdownCss);
-        const fontName = await pickFontName(context);
+        const currentFont = await patcher.detectAppliedMarkdownFont(
+            targets.markdownCss,
+            backups,
+            currentMetadata,
+        );
+        const fontName = await pickFontName(context, currentFont);
 
         if (fontName) {
             await runOperation(() => applyAndNotify(fontName));

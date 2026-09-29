@@ -5,6 +5,7 @@ import * as path from 'path';
 import {
     buildMarkdownRule,
     containsTargetFontReferences,
+    detectPatchedMarkdownFont,
     replaceFontInContent,
 } from './font-utils';
 
@@ -599,6 +600,24 @@ export async function hasRestorableBackupSet(
 
     const backupExistence = await Promise.all(getBackupContentPaths(backups).map(pathExists));
     return backupExistence.some(Boolean);
+}
+
+export async function detectAppliedMarkdownFont(
+    targetPath: string,
+    backups: BackupFiles,
+    currentMetadata: BackupMetadata,
+): Promise<string | undefined> {
+    if (!await hasRestorableBackupSet(backups, currentMetadata)
+        || !await pathExists(targetPath)
+        || !await pathExists(backups.markdownCss)) {
+        return undefined;
+    }
+
+    const [backupContent, currentContent] = await Promise.all([
+        fs.readFile(backups.markdownCss, 'utf-8'),
+        fs.readFile(targetPath, 'utf-8'),
+    ]);
+    return detectPatchedMarkdownFont(backupContent, currentContent);
 }
 
 async function ensureBackup(contentPath: string, backupPath: string): Promise<void> {
