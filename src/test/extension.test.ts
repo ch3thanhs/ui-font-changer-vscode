@@ -596,7 +596,14 @@ suite('surface update summaries', () => {
 suite('installed font parsing', () => {
     test('normalizes registry-style font names', () => {
         assert.strictEqual(normalizeFontFamilyName('Inter (TrueType)'), 'Inter');
+        assert.strictEqual(normalizeFontFamilyName('Inter(TrueType)'), 'Inter');
         assert.strictEqual(normalizeFontFamilyName('"JetBrains Mono"'), 'JetBrains Mono');
+    });
+
+    test('handles long whitespace before an invalid font type suffix', () => {
+        const fontName = `Inter${' '.repeat(100_000)}(TrueTypX)`;
+
+        assert.strictEqual(normalizeFontFamilyName(fontName), fontName);
     });
 
     test('parses and deduplicates registry and fc-list style output', () => {
