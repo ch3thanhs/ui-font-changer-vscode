@@ -28,6 +28,7 @@ import {
     applyWritesTransactionally,
     type BackupFiles,
     type BackupMetadata,
+    detectAppliedMarkdownFont,
     finalizeBackupSet,
     getElevationHint,
     getTargetFiles,
@@ -373,6 +374,40 @@ suite('backup and restore filesystem workflow', () => {
         assert.strictEqual(fs.readFileSync(markdownPath, 'utf-8'), markdownOriginal);
     });
 
+    test('detects only a font still applied to the current VS Code build', async () => {
+        const markdownPath = path.join(tempRoot, 'live', 'markdown.css');
+        const markdownOriginal = 'body { color: var(--vscode-foreground); }';
+        fs.mkdirSync(path.dirname(markdownPath), { recursive: true });
+        fs.writeFileSync(markdownPath, markdownOriginal);
+
+        await prepareBackupSet(backups, currentMetadata);
+        const write = await planMarkdownPatchWrite(markdownPath, backups.markdownCss, 'Inter');
+        assert.ok(write);
+        await finalizeBackupSet(backups);
+        await applyWritesTransactionally([write]);
+
+        assert.strictEqual(
+            await detectAppliedMarkdownFont(markdownPath, backups, currentMetadata),
+            'Inter',
+        );
+
+        fs.writeFileSync(markdownPath, markdownOriginal);
+        assert.strictEqual(
+            await detectAppliedMarkdownFont(markdownPath, backups, currentMetadata),
+            undefined,
+        );
+
+        await applyWritesTransactionally([write]);
+        assert.strictEqual(
+            await detectAppliedMarkdownFont(
+                markdownPath,
+                backups,
+                { ...currentMetadata, buildId: 'updated-build' },
+            ),
+            undefined,
+        );
+    });
+
     test('does not recreate a missing backup from patched live content', async () => {
         const firstPath = path.join(tempRoot, 'live', 'first.css');
         const secondPath = path.join(tempRoot, 'live', 'second.css');
@@ -561,7 +596,14 @@ suite('surface update summaries', () => {
 suite('installed font parsing', () => {
     test('normalizes registry-style font names', () => {
         assert.strictEqual(normalizeFontFamilyName('Inter (TrueType)'), 'Inter');
+        assert.strictEqual(normalizeFontFamilyName('Inter(TrueType)'), 'Inter');
         assert.strictEqual(normalizeFontFamilyName('"JetBrains Mono"'), 'JetBrains Mono');
+    });
+
+    test('handles long whitespace before an invalid font type suffix', () => {
+        const fontName = `Inter${' '.repeat(100_000)}(TrueTypX)`;
+
+        assert.strictEqual(normalizeFontFamilyName(fontName), fontName);
     });
 
     test('parses and deduplicates registry and fc-list style output', () => {

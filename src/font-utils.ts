@@ -120,11 +120,12 @@ function formatFontFamily(fontName: string): string {
 }
 
 export function normalizeFontFamilyName(name: string): string {
-    return name
+    const normalizedName = name
         .trim()
-        .replace(/^"(.+)"$/, '$1')
-        .replace(/\s*\((?:TrueType|OpenType|Type 1|Raster)\)$/i, '')
-        .trim();
+        .replace(/^"(.+)"$/, '$1');
+    const fontTypeSuffix = /\((?:TrueType|OpenType|Type 1|Raster)\)$/i.exec(normalizedName);
+
+    return (fontTypeSuffix ? normalizedName.slice(0, fontTypeSuffix.index) : normalizedName).trim();
 }
 
 export function parseInstalledFontList(rawOutput: string): string[] {

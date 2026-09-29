@@ -4,6 +4,17 @@ All notable changes to the "UI Font Changer for VS Code" extension will be docum
 
 This project loosely follows [Keep a Changelog](http://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
 
+## [1.0.5] - 2026-09-29
+
+### Changed
+
+- Exclude development-only dependencies from the packaged extension.
+
+### Fixed
+
+- Detect only a font that is still applied to Markdown Preview for the current VS Code build, avoiding a stale selection after the file is restored or VS Code is updated.
+- Avoid polynomial-time regular expression backtracking while normalizing system font names, preventing extension host stalls on malformed font metadata.
+
 ## [1.0.4] - 2026-09-19
 
 ### Added
