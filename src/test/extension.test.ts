@@ -1,10 +1,15 @@
 import * as assert from 'assert';
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
-import { shouldShowWelcomeNotification } from '../extension';
+import {
+    getBuildIdentity,
+    shouldShowWelcomeNotification,
+    shouldSuggestReapply,
+} from '../extension';
 import {
     containsTargetFontReferences,
     DEFAULT_FONTS_TO_REPLACE,
@@ -28,7 +33,9 @@ import {
     applyWritesTransactionally,
     type BackupFiles,
     type BackupMetadata,
+    createPathSafetyRoots,
     detectAppliedMarkdownFont,
+    type FileMetadata,
     finalizeBackupSet,
     getElevationHint,
     getTargetFiles,
@@ -37,9 +44,20 @@ import {
     planFontPatchWrites,
     planMarkdownPatchWrite,
     planRestoreWrites,
+    type PathSafetyRoots,
+    preflightPatchTargets,
     prepareBackupSet,
     summarizeSurfaceUpdates,
+    validatePathWithinRoot,
 } from '../patcher';
+
+function getTextMetadata(content: string): FileMetadata {
+    const buffer = Buffer.from(content, 'utf-8');
+    return {
+        size: buffer.length,
+        sha256: createHash('sha256').update(buffer).digest('hex'),
+    };
+}
 
 suite('replaceFontInContent', () => {
     test('replaces all three default Segoe variants', () => {
@@ -207,9 +225,11 @@ suite('buildMarkdownRule', () => {
 
 suite('transactional writes', () => {
     let tempRoot: string;
+    let safetyRoots: PathSafetyRoots;
 
-    setup(() => {
+    setup(async () => {
         tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ui-font-changer-test-'));
+        safetyRoots = await createPathSafetyRoots(tempRoot, tempRoot);
     });
 
     teardown(() => {
@@ -223,9 +243,17 @@ suite('transactional writes', () => {
         fs.writeFileSync(secondPath, 'second original');
 
         await assert.rejects(applyWritesTransactionally([
-            { targetPath: firstPath, content: 'first updated' },
-            { targetPath: secondPath, content: 'second updated' },
-        ], async (filePath, content) => {
+            {
+                targetPath: firstPath,
+                content: 'first updated',
+                expectedTarget: getTextMetadata('first original'),
+            },
+            {
+                targetPath: secondPath,
+                content: 'second updated',
+                expectedTarget: getTextMetadata('second original'),
+            },
+        ], safetyRoots.targetRoot, async (filePath, content) => {
             fs.writeFileSync(filePath, content);
             if (filePath === secondPath) {
                 throw new Error('simulated write failure');
@@ -234,6 +262,198 @@ suite('transactional writes', () => {
 
         assert.strictEqual(fs.readFileSync(firstPath, 'utf-8'), 'first original');
         assert.strictEqual(fs.readFileSync(secondPath, 'utf-8'), 'second original');
+    });
+
+    test('rejects a target that changed after the write was planned', async () => {
+        const targetPath = path.join(tempRoot, 'workbench.css');
+        fs.writeFileSync(targetPath, 'planned original');
+        const write = {
+            targetPath,
+            content: 'patched content',
+            expectedTarget: getTextMetadata('planned original'),
+        };
+        fs.writeFileSync(targetPath, 'updated by another process');
+
+        await assert.rejects(
+            applyWritesTransactionally([write], safetyRoots.targetRoot),
+            /changed while the operation was being prepared/i,
+        );
+        assert.strictEqual(fs.readFileSync(targetPath, 'utf-8'), 'updated by another process');
+    });
+});
+
+suite('filesystem path safety', () => {
+    let tempRoot: string;
+
+    setup(() => {
+        tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ui-font-changer-path-safety-test-'));
+    });
+
+    teardown(() => {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    });
+
+    function createBackups(storageRoot: string): BackupFiles {
+        const backupRoot = path.join(storageRoot, 'ui-font-changer-for-vscode-backups');
+        return {
+            root: backupRoot,
+            metadata: path.join(backupRoot, 'metadata.json'),
+            workbenchCss: path.join(backupRoot, 'workbench.css.bak'),
+            workbenchJs: path.join(backupRoot, 'workbench.js.bak'),
+            sessionsCss: path.join(backupRoot, 'sessions.css.bak'),
+            sessionsJs: path.join(backupRoot, 'sessions.js.bak'),
+            markdownCss: path.join(backupRoot, 'markdown.css.bak'),
+        };
+    }
+
+    function createDirectoryLink(targetPath: string, linkPath: string): void {
+        fs.symlinkSync(targetPath, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
+    }
+
+    test('rejects a target file that is a symbolic link', async () => {
+        const targetRoot = path.join(tempRoot, 'app');
+        const outsidePath = path.join(tempRoot, process.platform === 'win32' ? 'outside' : 'outside.css');
+        const targetPath = path.join(targetRoot, 'workbench.css');
+        fs.mkdirSync(targetRoot);
+        if (process.platform === 'win32') {
+            fs.mkdirSync(outsidePath);
+            createDirectoryLink(outsidePath, targetPath);
+        } else {
+            fs.writeFileSync(outsidePath, 'outside');
+            fs.symlinkSync(outsidePath, targetPath, 'file');
+        }
+        const safetyRoots = await createPathSafetyRoots(targetRoot, targetRoot);
+
+        await assert.rejects(
+            validatePathWithinRoot(targetPath, safetyRoots.targetRoot, 'a VS Code UI file'),
+            /symbolic link|junction/i,
+        );
+    });
+
+    test('rejects a target beneath a linked parent directory', async () => {
+        const targetRoot = path.join(tempRoot, 'app');
+        const outsideRoot = path.join(tempRoot, 'outside');
+        fs.mkdirSync(targetRoot);
+        fs.mkdirSync(outsideRoot);
+        fs.writeFileSync(path.join(outsideRoot, 'workbench.css'), 'outside');
+        const linkedParent = path.join(targetRoot, 'workbench');
+        createDirectoryLink(outsideRoot, linkedParent);
+        const safetyRoots = await createPathSafetyRoots(targetRoot, targetRoot);
+
+        await assert.rejects(
+            validatePathWithinRoot(
+                path.join(linkedParent, 'workbench.css'),
+                safetyRoots.targetRoot,
+                'a VS Code UI file',
+            ),
+            /symbolic link|junction/i,
+        );
+    });
+
+    test('rejects a linked backup directory', async () => {
+        const storageRoot = path.join(tempRoot, 'storage');
+        const outsideRoot = path.join(tempRoot, 'outside-backups');
+        const targetRoot = path.join(tempRoot, 'app');
+        fs.mkdirSync(storageRoot);
+        fs.mkdirSync(outsideRoot);
+        fs.mkdirSync(targetRoot);
+        const backups = createBackups(storageRoot);
+        const safetyRoots = await createPathSafetyRoots(targetRoot, storageRoot);
+        createDirectoryLink(outsideRoot, backups.root);
+
+        await assert.rejects(
+            preflightPatchTargets([], backups, safetyRoots),
+            /symbolic link|junction/i,
+        );
+    });
+
+    test('rejects a linked backup file before restore discovery reads it', async () => {
+        const storageRoot = path.join(tempRoot, 'storage');
+        const targetRoot = path.join(tempRoot, 'app');
+        const outsideRoot = path.join(tempRoot, 'outside-backup');
+        fs.mkdirSync(storageRoot);
+        fs.mkdirSync(targetRoot);
+        fs.mkdirSync(outsideRoot);
+        const backups = createBackups(storageRoot);
+        fs.mkdirSync(backups.root);
+        const safetyRoots = await createPathSafetyRoots(targetRoot, storageRoot);
+        createDirectoryLink(outsideRoot, backups.workbenchCss);
+
+        await assert.rejects(
+            hasRestorableBackupSet(backups, {
+                version: 3,
+                vscodeVersion: '1.2.3',
+                appName: 'Visual Studio Code',
+                appRoot: targetRoot,
+                buildId: 'abc123',
+            }, safetyRoots),
+            /symbolic link|junction/i,
+        );
+    });
+
+    test('rejects a target path outside the application root', async () => {
+        const targetRoot = path.join(tempRoot, 'app');
+        const outsidePath = path.join(tempRoot, 'outside.css');
+        fs.mkdirSync(targetRoot);
+        fs.writeFileSync(outsidePath, 'outside');
+        const safetyRoots = await createPathSafetyRoots(targetRoot, targetRoot);
+
+        await assert.rejects(
+            validatePathWithinRoot(outsidePath, safetyRoots.targetRoot, 'a VS Code UI file'),
+            /outside its expected directory/i,
+        );
+    });
+
+    test('rejects a trusted root replaced after it was pinned', async () => {
+        const targetRoot = path.join(tempRoot, 'app');
+        const outsideRoot = path.join(tempRoot, 'outside');
+        fs.mkdirSync(targetRoot);
+        fs.mkdirSync(outsideRoot);
+        const safetyRoots = await createPathSafetyRoots(targetRoot, targetRoot);
+        fs.rmdirSync(targetRoot);
+        createDirectoryLink(outsideRoot, targetRoot);
+
+        await assert.rejects(
+            validatePathWithinRoot(
+                path.join(targetRoot, 'workbench.css'),
+                safetyRoots.targetRoot,
+                'a VS Code UI file',
+            ),
+            /expected directory changed/i,
+        );
+    });
+
+    test('rejects a parent-directory swap between preflight and write', async () => {
+        const targetRoot = path.join(tempRoot, 'app');
+        const targetParent = path.join(targetRoot, 'workbench');
+        const targetPath = path.join(targetParent, 'workbench.css');
+        const storageRoot = path.join(tempRoot, 'storage');
+        const outsideRoot = path.join(tempRoot, 'outside');
+        const outsidePath = path.join(outsideRoot, 'workbench.css');
+        fs.mkdirSync(targetParent, { recursive: true });
+        fs.mkdirSync(storageRoot);
+        fs.mkdirSync(outsideRoot);
+        fs.writeFileSync(targetPath, 'original');
+        fs.writeFileSync(outsidePath, 'outside');
+        const backups = createBackups(storageRoot);
+        const safetyRoots = await createPathSafetyRoots(targetRoot, storageRoot);
+
+        await preflightPatchTargets([{ target: targetPath }], backups, safetyRoots);
+        fs.rmSync(targetParent, { recursive: true });
+        createDirectoryLink(outsideRoot, targetParent);
+
+        await assert.rejects(
+            applyWritesTransactionally(
+                [{
+                    targetPath,
+                    content: 'updated',
+                    expectedTarget: getTextMetadata('original'),
+                }],
+                safetyRoots.targetRoot,
+            ),
+            /symbolic link|junction/i,
+        );
+        assert.strictEqual(fs.readFileSync(outsidePath, 'utf-8'), 'outside');
     });
 });
 
@@ -277,6 +497,7 @@ suite('operation queue', () => {
 suite('backup and restore filesystem workflow', () => {
     let tempRoot: string;
     let backups: BackupFiles;
+    let safetyRoots: PathSafetyRoots;
     const currentMetadata: BackupMetadata = {
         version: 3,
         vscodeVersion: '1.2.3',
@@ -285,8 +506,9 @@ suite('backup and restore filesystem workflow', () => {
         buildId: 'abc123',
     };
 
-    setup(() => {
+    setup(async () => {
         tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ui-font-changer-workflow-test-'));
+        safetyRoots = await createPathSafetyRoots(tempRoot, tempRoot);
         const backupRoot = path.join(tempRoot, 'backups');
         backups = {
             root: backupRoot,
@@ -303,7 +525,8 @@ suite('backup and restore filesystem workflow', () => {
         fs.rmSync(tempRoot, { recursive: true, force: true });
     });
 
-    test('patches all surfaces repeatedly and restores their exact original contents', async () => {
+    test('patches all surfaces repeatedly and restores their exact original contents', async function () {
+        this.timeout(10_000);
         const liveRoot = path.join(tempRoot, 'live');
         const markdownPath = path.join(tempRoot, 'live', 'markdown.css');
         const markdownOriginal = 'body { color: var(--vscode-foreground); }';
@@ -333,13 +556,23 @@ suite('backup and restore filesystem workflow', () => {
         fontFiles.forEach(file => fs.writeFileSync(file.target, file.original));
         fs.writeFileSync(markdownPath, markdownOriginal);
 
-        await prepareBackupSet(backups, currentMetadata);
-        const patchWrites = await planFontPatchWrites(fontFiles, 'JetBrains Mono', DEFAULT_FONTS_TO_REPLACE);
-        const markdownWrite = await planMarkdownPatchWrite(markdownPath, backups.markdownCss, 'JetBrains Mono');
+        await prepareBackupSet(backups, currentMetadata, safetyRoots);
+        const patchWrites = await planFontPatchWrites(
+            fontFiles,
+            'JetBrains Mono',
+            DEFAULT_FONTS_TO_REPLACE,
+            safetyRoots,
+        );
+        const markdownWrite = await planMarkdownPatchWrite(
+            markdownPath,
+            backups.markdownCss,
+            'JetBrains Mono',
+            safetyRoots,
+        );
         assert.ok(markdownWrite);
         patchWrites.push(markdownWrite);
-        await finalizeBackupSet(backups);
-        await applyWritesTransactionally(patchWrites);
+        await finalizeBackupSet(backups, safetyRoots);
+        await applyWritesTransactionally(patchWrites, safetyRoots.targetRoot);
 
         fontFiles.forEach(file => {
             assert.strictEqual(fs.readFileSync(file.backup, 'utf-8'), file.original);
@@ -348,13 +581,23 @@ suite('backup and restore filesystem workflow', () => {
         assert.strictEqual(fs.readFileSync(backups.markdownCss, 'utf-8'), markdownOriginal);
         assert.ok(fs.readFileSync(markdownPath, 'utf-8').includes(buildMarkdownRule('JetBrains Mono')));
 
-        await prepareBackupSet(backups, currentMetadata);
-        const secondPatchWrites = await planFontPatchWrites(fontFiles, 'Fira Sans', DEFAULT_FONTS_TO_REPLACE);
-        const secondMarkdownWrite = await planMarkdownPatchWrite(markdownPath, backups.markdownCss, 'Fira Sans');
+        await prepareBackupSet(backups, currentMetadata, safetyRoots);
+        const secondPatchWrites = await planFontPatchWrites(
+            fontFiles,
+            'Fira Sans',
+            DEFAULT_FONTS_TO_REPLACE,
+            safetyRoots,
+        );
+        const secondMarkdownWrite = await planMarkdownPatchWrite(
+            markdownPath,
+            backups.markdownCss,
+            'Fira Sans',
+            safetyRoots,
+        );
         assert.ok(secondMarkdownWrite);
         secondPatchWrites.push(secondMarkdownWrite);
-        await finalizeBackupSet(backups);
-        await applyWritesTransactionally(secondPatchWrites);
+        await finalizeBackupSet(backups, safetyRoots);
+        await applyWritesTransactionally(secondPatchWrites, safetyRoots.targetRoot);
 
         fontFiles.forEach(file => {
             assert.strictEqual(fs.readFileSync(file.backup, 'utf-8'), file.original);
@@ -365,8 +608,8 @@ suite('backup and restore filesystem workflow', () => {
         const restoreWrites = await planRestoreWrites([
             ...fontFiles,
             { target: markdownPath, backup: backups.markdownCss },
-        ]);
-        await applyWritesTransactionally(restoreWrites);
+        ], safetyRoots);
+        await applyWritesTransactionally(restoreWrites, safetyRoots.targetRoot);
 
         fontFiles.forEach(file => {
             assert.strictEqual(fs.readFileSync(file.target, 'utf-8'), file.original);
@@ -380,29 +623,30 @@ suite('backup and restore filesystem workflow', () => {
         fs.mkdirSync(path.dirname(markdownPath), { recursive: true });
         fs.writeFileSync(markdownPath, markdownOriginal);
 
-        await prepareBackupSet(backups, currentMetadata);
-        const write = await planMarkdownPatchWrite(markdownPath, backups.markdownCss, 'Inter');
+        await prepareBackupSet(backups, currentMetadata, safetyRoots);
+        const write = await planMarkdownPatchWrite(markdownPath, backups.markdownCss, 'Inter', safetyRoots);
         assert.ok(write);
-        await finalizeBackupSet(backups);
-        await applyWritesTransactionally([write]);
+        await finalizeBackupSet(backups, safetyRoots);
+        await applyWritesTransactionally([write], safetyRoots.targetRoot);
 
         assert.strictEqual(
-            await detectAppliedMarkdownFont(markdownPath, backups, currentMetadata),
+            await detectAppliedMarkdownFont(markdownPath, backups, currentMetadata, safetyRoots),
             'Inter',
         );
 
         fs.writeFileSync(markdownPath, markdownOriginal);
         assert.strictEqual(
-            await detectAppliedMarkdownFont(markdownPath, backups, currentMetadata),
+            await detectAppliedMarkdownFont(markdownPath, backups, currentMetadata, safetyRoots),
             undefined,
         );
 
-        await applyWritesTransactionally([write]);
+        await applyWritesTransactionally([write], safetyRoots.targetRoot);
         assert.strictEqual(
             await detectAppliedMarkdownFont(
                 markdownPath,
                 backups,
                 { ...currentMetadata, buildId: 'updated-build' },
+                safetyRoots,
             ),
             undefined,
         );
@@ -415,16 +659,16 @@ suite('backup and restore filesystem workflow', () => {
         fs.writeFileSync(firstPath, 'body { font-family: "Segoe UI"; }');
         fs.writeFileSync(secondPath, 'body { font-family: "Segoe UI"; }');
 
-        await prepareBackupSet(backups, currentMetadata);
+        await prepareBackupSet(backups, currentMetadata, safetyRoots);
         const initialWrites = await planFontPatchWrites([
             { target: firstPath, backup: backups.workbenchCss },
             { target: secondPath, backup: backups.workbenchJs },
-        ], 'Inter', DEFAULT_FONTS_TO_REPLACE);
-        await finalizeBackupSet(backups);
-        await applyWritesTransactionally(initialWrites);
+        ], 'Inter', DEFAULT_FONTS_TO_REPLACE, safetyRoots);
+        await finalizeBackupSet(backups, safetyRoots);
+        await applyWritesTransactionally(initialWrites, safetyRoots.targetRoot);
         fs.rmSync(backups.workbenchJs);
 
-        await assert.rejects(prepareBackupSet(backups, currentMetadata), /backup/i);
+        await assert.rejects(prepareBackupSet(backups, currentMetadata, safetyRoots), /backup/i);
         assert.strictEqual(fs.existsSync(backups.workbenchJs), false);
     });
 
@@ -433,15 +677,15 @@ suite('backup and restore filesystem workflow', () => {
         fs.mkdirSync(path.dirname(targetPath), { recursive: true });
         fs.writeFileSync(targetPath, 'body { font-family: "Segoe UI"; }');
 
-        await prepareBackupSet(backups, currentMetadata);
+        await prepareBackupSet(backups, currentMetadata, safetyRoots);
         await planFontPatchWrites([
             { target: targetPath, backup: backups.workbenchCss },
-        ], 'Inter', DEFAULT_FONTS_TO_REPLACE);
-        await finalizeBackupSet(backups);
+        ], 'Inter', DEFAULT_FONTS_TO_REPLACE, safetyRoots);
+        await finalizeBackupSet(backups, safetyRoots);
         fs.writeFileSync(backups.workbenchCss, 'corrupted backup');
 
-        await assert.rejects(prepareBackupSet(backups, currentMetadata), /backup/i);
-        assert.strictEqual(await hasRestorableBackupSet(backups, currentMetadata), false);
+        await assert.rejects(prepareBackupSet(backups, currentMetadata, safetyRoots), /backup/i);
+        assert.strictEqual(await hasRestorableBackupSet(backups, currentMetadata, safetyRoots), false);
     });
 
     test('removes backups belonging to another VS Code build', async () => {
@@ -449,7 +693,7 @@ suite('backup and restore filesystem workflow', () => {
         fs.writeFileSync(backups.metadata, JSON.stringify({ ...currentMetadata, buildId: 'old-build' }));
         fs.writeFileSync(backups.workbenchCss, 'stale backup');
 
-        await prepareBackupSet(backups, currentMetadata);
+        await prepareBackupSet(backups, currentMetadata, safetyRoots);
 
         assert.strictEqual(fs.existsSync(backups.workbenchCss), false);
         assert.deepStrictEqual(JSON.parse(fs.readFileSync(backups.metadata, 'utf-8')), {
@@ -468,7 +712,7 @@ suite('backup and restore filesystem workflow', () => {
         }));
         fs.writeFileSync(backups.workbenchCss, 'original version 1 backup');
 
-        await prepareBackupSet(backups, currentMetadata);
+        await prepareBackupSet(backups, currentMetadata, safetyRoots);
 
         assert.strictEqual(fs.readFileSync(backups.workbenchCss, 'utf-8'), 'original version 1 backup');
         const migratedMetadata = JSON.parse(fs.readFileSync(backups.metadata, 'utf-8')) as BackupMetadata;
@@ -490,12 +734,12 @@ suite('backup and restore filesystem workflow', () => {
         }));
         fs.writeFileSync(backups.workbenchCss, 'body { font-family: "Segoe UI"; }');
 
-        await prepareBackupSet(backups, currentMetadata);
+        await prepareBackupSet(backups, currentMetadata, safetyRoots);
 
         await assert.rejects(planFontPatchWrites([
             { target: existingTarget, backup: backups.workbenchCss },
             { target: missingBackupTarget, backup: backups.workbenchJs },
-        ], 'JetBrains Mono', DEFAULT_FONTS_TO_REPLACE), /backup/i);
+        ], 'JetBrains Mono', DEFAULT_FONTS_TO_REPLACE, safetyRoots), /backup/i);
         assert.strictEqual(fs.existsSync(backups.workbenchJs), false);
     });
 
@@ -508,9 +752,13 @@ suite('backup and restore filesystem workflow', () => {
         }));
         fs.writeFileSync(backups.workbenchCss, 'original version 1 backup');
 
-        assert.strictEqual(await hasRestorableBackupSet(backups, currentMetadata), true);
+        assert.strictEqual(await hasRestorableBackupSet(backups, currentMetadata, safetyRoots), true);
         assert.strictEqual(
-            await hasRestorableBackupSet(backups, { ...currentMetadata, vscodeVersion: '1.2.4' }),
+            await hasRestorableBackupSet(
+                backups,
+                { ...currentMetadata, vscodeVersion: '1.2.4' },
+                safetyRoots,
+            ),
             false,
         );
     });
@@ -521,6 +769,36 @@ suite('welcome notification', () => {
         assert.strictEqual(shouldShowWelcomeNotification(false, false), true);
         assert.strictEqual(shouldShowWelcomeNotification(true, false), false);
         assert.strictEqual(shouldShowWelcomeNotification(false, true), false);
+    });
+});
+
+suite('reapply after update notification', () => {
+    const metadata: BackupMetadata = {
+        version: 3,
+        vscodeVersion: '1.2.3',
+        appName: 'Visual Studio Code',
+        appRoot: '/applications/code/resources/app',
+        buildId: 'abc123',
+    };
+
+    test('uses version, application, root, and build ID in the build identity', () => {
+        const identity = getBuildIdentity(metadata);
+
+        assert.notStrictEqual(getBuildIdentity({ ...metadata, vscodeVersion: '1.2.4' }), identity);
+        assert.notStrictEqual(getBuildIdentity({ ...metadata, appName: 'Code - Insiders' }), identity);
+        assert.notStrictEqual(getBuildIdentity({ ...metadata, appRoot: '/new/app' }), identity);
+        assert.notStrictEqual(getBuildIdentity({ ...metadata, buildId: 'def456' }), identity);
+    });
+
+    test('suggests reapply once when a selected font belongs to an older build', () => {
+        assert.strictEqual(shouldSuggestReapply('Inter', 'old-build', 'new-build', undefined), true);
+        assert.strictEqual(shouldSuggestReapply('Inter', 'old-build', 'new-build', 'new-build'), false);
+    });
+
+    test('does not suggest reapply without confirmed applied state or a build change', () => {
+        assert.strictEqual(shouldSuggestReapply(undefined, 'old-build', 'new-build', undefined), false);
+        assert.strictEqual(shouldSuggestReapply('Inter', undefined, 'new-build', undefined), false);
+        assert.strictEqual(shouldSuggestReapply('Inter', 'new-build', 'new-build', undefined), false);
     });
 });
 

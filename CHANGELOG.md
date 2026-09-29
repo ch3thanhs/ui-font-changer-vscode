@@ -4,6 +4,16 @@ All notable changes to the "UI Font Changer for VS Code" extension will be docum
 
 This project loosely follows [Keep a Changelog](http://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
 
+## [1.0.6] - 2026-09-29
+
+### Added
+
+- Suggest reapplying the selected UI font once after a VS Code update resets installation files.
+
+### Fixed
+
+- Restrict installation and backup operations to validated paths, reject symbolic links and junctions, and stop if target files change while an update is being prepared.
+
 ## [1.0.5] - 2026-09-29
 
 ### Changed
