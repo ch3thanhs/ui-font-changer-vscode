@@ -14,7 +14,6 @@ import * as patcher from './patcher';
 import {
     type BackupFiles,
     type BackupMetadata,
-    getBackupContentPaths,
     getBackupFiles,
     getCurrentBackupMetadata,
     getTargetFiles,
@@ -105,14 +104,20 @@ async function migrateLegacyFontSelection(
     context: vscode.ExtensionContext,
     targetPath: string,
     backupPath: string,
+    pathSafetyRoots: patcher.PathSafetyRoots,
 ): Promise<void> {
+    await patcher.validatePathWithinRoot(targetPath, pathSafetyRoots.targetRoot, 'a VS Code UI file');
+    await patcher.validatePathWithinRoot(backupPath, pathSafetyRoots.backupRoot, 'a backup file');
     if (context.globalState.get<string>(CURRENT_FONT_KEY)
         || !await patcher.pathExists(targetPath)
         || !await patcher.pathExists(backupPath)) {
         return;
     }
 
+    await patcher.validatePathWithinRoot(targetPath, pathSafetyRoots.targetRoot, 'a VS Code UI file');
+    await patcher.validatePathWithinRoot(backupPath, pathSafetyRoots.backupRoot, 'a backup file');
     const backupContent = await fs.readFile(backupPath, 'utf-8');
+    await patcher.validatePathWithinRoot(targetPath, pathSafetyRoots.targetRoot, 'a VS Code UI file');
     const currentContent = await fs.readFile(targetPath, 'utf-8');
     const legacyFontName = detectPatchedMarkdownFont(backupContent, currentContent);
     if (legacyFontName) {
@@ -206,6 +211,7 @@ async function applyFont(
     targets: TargetFiles,
     backups: BackupFiles,
     currentMetadata: BackupMetadata,
+    pathSafetyRoots: patcher.PathSafetyRoots,
     namesToReplace: ReadonlyArray<string>,
     fontName: string,
 ): Promise<SurfaceUpdate[] | undefined> {
@@ -224,26 +230,32 @@ async function applyFont(
         await patcher.preflightPatchTargets([
             ...filesToModify,
             { target: targets.markdownCss },
-        ], backups.root);
-        await patcher.prepareBackupSet(backups, currentMetadata);
+        ], backups, pathSafetyRoots);
+        await patcher.prepareBackupSet(backups, currentMetadata, pathSafetyRoots);
 
-        const plannedWrites = await patcher.planFontPatchWrites(filesToModify, fontName, namesToReplace);
+        const plannedWrites = await patcher.planFontPatchWrites(
+            filesToModify,
+            fontName,
+            namesToReplace,
+            pathSafetyRoots,
+        );
         const markdownWrite = await patcher.planMarkdownPatchWrite(
             targets.markdownCss,
             backups.markdownCss,
             fontName,
+            pathSafetyRoots,
         );
         if (markdownWrite) {
             plannedWrites.push(markdownWrite);
         }
 
-        await patcher.finalizeBackupSet(backups);
+        await patcher.finalizeBackupSet(backups, pathSafetyRoots);
 
         if (plannedWrites.length === 0) {
             return undefined;
         }
 
-        await patcher.applyWritesTransactionally(plannedWrites);
+        await patcher.applyWritesTransactionally(plannedWrites, pathSafetyRoots.targetRoot);
         await rememberFontSelection(context, fontName);
         return summarizeSurfaceUpdates(targets, plannedWrites);
     });
@@ -318,6 +330,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     const targets = getTargetFiles(vscode.env.appRoot);
     const backups = getBackupFiles(context.globalStorageUri.fsPath);
+    const pathSafetyRoots = await patcher.createPathSafetyRoots(
+        vscode.env.appRoot,
+        context.globalStorageUri.fsPath,
+    );
     const currentMetadata = await getCurrentBackupMetadata(
         vscode.version,
         vscode.env.appName,
@@ -332,7 +348,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
 
         try {
-            const updates = await applyFont(context, targets, backups, currentMetadata, namesToReplace, fontName);
+            const updates = await applyFont(
+                context,
+                targets,
+                backups,
+                currentMetadata,
+                pathSafetyRoots,
+                namesToReplace,
+                fontName,
+            );
             if (!updates) {
                 vscode.window.showWarningMessage('No compatible VS Code UI files were found to update.');
                 return;
@@ -350,12 +374,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     };
 
     const changeDisposable = vscode.commands.registerCommand('ui-font-changer-for-vscode.change', async () => {
-        await migrateLegacyFontSelection(context, targets.markdownCss, backups.markdownCss);
-        const currentFont = await patcher.detectAppliedMarkdownFont(
-            targets.markdownCss,
-            backups,
-            currentMetadata,
-        );
+        let currentFont: string | undefined;
+        try {
+            await migrateLegacyFontSelection(context, targets.markdownCss, backups.markdownCss, pathSafetyRoots);
+            currentFont = await patcher.detectAppliedMarkdownFont(
+                targets.markdownCss,
+                backups,
+                currentMetadata,
+                pathSafetyRoots,
+            );
+        } catch (error) {
+            await showUserFacingError(error);
+            return;
+        }
         const fontName = await pickFontName(context, currentFont);
 
         if (fontName) {
@@ -364,7 +395,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     });
 
     const reapplyDisposable = vscode.commands.registerCommand('ui-font-changer-for-vscode.reapply', async () => {
-        await migrateLegacyFontSelection(context, targets.markdownCss, backups.markdownCss);
+        try {
+            await migrateLegacyFontSelection(context, targets.markdownCss, backups.markdownCss, pathSafetyRoots);
+        } catch (error) {
+            await showUserFacingError(error);
+            return;
+        }
         const fontName = context.globalState.get<string>(CURRENT_FONT_KEY);
         if (!fontName) {
             vscode.window.showWarningMessage('No previously selected UI font was found. Choose a font first.');
@@ -375,12 +411,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     });
 
     const restoreDisposable = vscode.commands.registerCommand('ui-font-changer-for-vscode.restore', () => runOperation(async () => {
-        if (!await patcher.hasRestorableBackupSet(backups, currentMetadata)) {
-            vscode.window.showWarningMessage('No compatible font backup was found for this VS Code build.');
-            return;
-        }
-
         try {
+            if (!await patcher.hasRestorableBackupSet(backups, currentMetadata, pathSafetyRoots)) {
+                vscode.window.showWarningMessage('No compatible font backup was found for this VS Code build.');
+                return;
+            }
+
             const restoredSurfaces = await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,
                 title: 'Restoring original UI fonts...',
@@ -394,14 +430,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                     { target: targets.markdownCss, backup: backups.markdownCss },
                 ];
 
-                await patcher.preflightRestoreTargets(filesToRestore, backups.root);
+                await patcher.preflightRestoreTargets(filesToRestore, backups, pathSafetyRoots);
 
-                const plannedWrites = await patcher.planRestoreWrites(filesToRestore);
+                const plannedWrites = await patcher.planRestoreWrites(filesToRestore, pathSafetyRoots);
                 if (plannedWrites.length === 0) {
                     return undefined;
                 }
 
-                await patcher.applyWritesTransactionally(plannedWrites);
+                await patcher.applyWritesTransactionally(plannedWrites, pathSafetyRoots.targetRoot);
                 await context.globalState.update(CURRENT_FONT_KEY, undefined);
                 return summarizeSurfaceUpdates(targets, plannedWrites);
             });
@@ -423,8 +459,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }));
 
     context.subscriptions.push(changeDisposable, reapplyDisposable, restoreDisposable);
-    const backupExistence = await Promise.all(getBackupContentPaths(backups).map(patcher.pathExists));
-    const hasExistingBackups = backupExistence.some(Boolean);
+    let hasExistingBackups = true;
+    try {
+        hasExistingBackups = await patcher.hasAnyBackupFiles(backups, pathSafetyRoots);
+    } catch (error) {
+        await showUserFacingError(error);
+    }
     void showWelcomeNotification(context, hasExistingBackups);
 }
 

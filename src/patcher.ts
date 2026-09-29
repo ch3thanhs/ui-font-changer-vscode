@@ -38,10 +38,10 @@ export interface BackupMetadata {
     appRoot: string;
     buildId: string;
     state?: 'creating' | 'complete';
-    files?: Record<string, BackupFileMetadata>;
+    files?: Record<string, FileMetadata>;
 }
 
-interface BackupFileMetadata {
+export interface FileMetadata {
     size: number;
     sha256: string;
 }
@@ -49,6 +49,17 @@ interface BackupFileMetadata {
 export interface PlannedFileWrite {
     targetPath: string;
     content: string;
+    expectedTarget: FileMetadata;
+}
+
+export interface TrustedPathRoot {
+    path: string;
+    canonicalPath: string;
+}
+
+export interface PathSafetyRoots {
+    targetRoot: TrustedPathRoot;
+    backupRoot: TrustedPathRoot;
 }
 
 export interface SurfaceUpdate {
@@ -191,6 +202,129 @@ export async function pathExists(filePath: string): Promise<boolean> {
     }
 }
 
+function isPathWithinRoot(rootPath: string, candidatePath: string): boolean {
+    const relativePath = path.relative(rootPath, candidatePath);
+    return relativePath === ''
+        || (relativePath !== '..'
+            && !relativePath.startsWith(`..${path.sep}`)
+            && !path.isAbsolute(relativePath));
+}
+
+async function lstatIfExists(filePath: string): Promise<Awaited<ReturnType<typeof fs.lstat>> | undefined> {
+    try {
+        return await fs.lstat(filePath);
+    } catch (error) {
+        if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+            return undefined;
+        }
+        throw error;
+    }
+}
+
+async function createTrustedPathRoot(
+    rootPath: string,
+    purpose: string,
+    createIfMissing: boolean = false,
+): Promise<TrustedPathRoot> {
+    const absolutePath = path.resolve(rootPath);
+    if (createIfMissing) {
+        await fs.mkdir(absolutePath, { recursive: true });
+    }
+    if (!await lstatIfExists(absolutePath)) {
+        throw new FileAccessError(
+            `UI Font Changer for VS Code could not find the expected ${purpose} directory.`,
+        );
+    }
+
+    return {
+        path: absolutePath,
+        canonicalPath: await fs.realpath(absolutePath),
+    };
+}
+
+export async function createPathSafetyRoots(
+    targetRoot: string,
+    backupRoot: string,
+): Promise<PathSafetyRoots> {
+    const [trustedTargetRoot, trustedBackupRoot] = await Promise.all([
+        createTrustedPathRoot(targetRoot, 'VS Code application'),
+        createTrustedPathRoot(backupRoot, 'backup storage', true),
+    ]);
+    return {
+        targetRoot: trustedTargetRoot,
+        backupRoot: trustedBackupRoot,
+    };
+}
+
+async function getVerifiedCanonicalRoot(root: TrustedPathRoot, purpose: string): Promise<string> {
+    let currentCanonicalPath: string;
+    try {
+        currentCanonicalPath = await fs.realpath(root.path);
+    } catch {
+        throw new FileAccessError(
+            `UI Font Changer for VS Code could not verify the expected ${purpose} directory.`,
+        );
+    }
+
+    if (path.relative(root.canonicalPath, currentCanonicalPath) !== '') {
+        throw new FileAccessError(
+            `UI Font Changer for VS Code refused to access ${purpose} because its expected directory changed.`,
+        );
+    }
+    return currentCanonicalPath;
+}
+
+export async function validatePathWithinRoot(
+    filePath: string,
+    root: TrustedPathRoot,
+    purpose: string,
+): Promise<void> {
+    const absoluteRoot = root.path;
+    const absolutePath = path.resolve(filePath);
+    if (!isPathWithinRoot(absoluteRoot, absolutePath)) {
+        throw new FileAccessError(
+            `UI Font Changer for VS Code refused to access ${purpose} outside its expected directory.`,
+        );
+    }
+
+    let canonicalRoot = await getVerifiedCanonicalRoot(root, purpose);
+
+    const relativePath = path.relative(absoluteRoot, absolutePath);
+    let currentPath = absoluteRoot;
+    let candidateExists = relativePath === '' && !!await lstatIfExists(currentPath);
+    for (const segment of relativePath.split(path.sep).filter(Boolean)) {
+        currentPath = path.join(currentPath, segment);
+        const stats = await lstatIfExists(currentPath);
+        if (!stats) {
+            candidateExists = false;
+            break;
+        }
+        if (stats.isSymbolicLink()) {
+            throw new FileAccessError(
+                `UI Font Changer for VS Code refused to access ${purpose} through a symbolic link or junction.`,
+            );
+        }
+        candidateExists = currentPath === absolutePath;
+    }
+
+    const rootExists = !!await lstatIfExists(absoluteRoot);
+    if (!rootExists || !candidateExists) {
+        await getVerifiedCanonicalRoot(root, purpose);
+        return;
+    }
+
+    const [verifiedCanonicalRoot, canonicalPath] = await Promise.all([
+        getVerifiedCanonicalRoot(root, purpose),
+        fs.realpath(absolutePath),
+    ]);
+    canonicalRoot = verifiedCanonicalRoot;
+    if (!isPathWithinRoot(canonicalRoot, canonicalPath)) {
+        throw new FileAccessError(
+            `UI Font Changer for VS Code refused to access ${purpose} outside its expected directory.`,
+        );
+    }
+}
+
 async function readBackupMetadata(
     backups: Pick<BackupFiles, 'metadata'>,
 ): Promise<BackupMetadata | undefined> {
@@ -210,20 +344,24 @@ async function writeJsonAtomically(filePath: string, data: unknown): Promise<voi
     await writeTextAtomically(filePath, `${JSON.stringify(data, null, 2)}\n`);
 }
 
-async function getBackupFileMetadata(filePath: string): Promise<BackupFileMetadata> {
-    const content = await fs.readFile(filePath);
+function getContentMetadata(content: Buffer): FileMetadata {
     return {
         size: content.length,
         sha256: createHash('sha256').update(content).digest('hex'),
     };
 }
 
-async function isBackupFileIntact(filePath: string, expected: BackupFileMetadata): Promise<boolean> {
+async function getFileMetadata(filePath: string): Promise<FileMetadata> {
+    const content = await fs.readFile(filePath);
+    return getContentMetadata(content);
+}
+
+async function isBackupFileIntact(filePath: string, expected: FileMetadata): Promise<boolean> {
     if (!await pathExists(filePath)) {
         return false;
     }
 
-    const actual = await getBackupFileMetadata(filePath);
+    const actual = await getFileMetadata(filePath);
     return actual.size === expected.size && actual.sha256 === expected.sha256;
 }
 
@@ -341,29 +479,48 @@ async function ensureFileReadableWritable(filePath: string, purpose: string): Pr
     }
 }
 
+async function validateBackupPaths(backups: BackupFiles, backupRoot: TrustedPathRoot): Promise<void> {
+    await Promise.all([
+        validatePathWithinRoot(backups.root, backupRoot, 'backup storage'),
+        validatePathWithinRoot(backups.metadata, backupRoot, 'backup metadata'),
+        ...getBackupContentPaths(backups).map(filePath =>
+            validatePathWithinRoot(filePath, backupRoot, 'a backup file')),
+    ]);
+}
+
 export async function preflightPatchTargets(
     targets: Array<{ target: string }>,
-    backupRoot: string,
+    backups: BackupFiles,
+    safetyRoots: PathSafetyRoots,
 ): Promise<void> {
-    await ensureDirectoryWritable(backupRoot, 'backup storage');
+    await validateBackupPaths(backups, safetyRoots.backupRoot);
+    await ensureDirectoryWritable(backups.root, 'backup storage');
+    await validateBackupPaths(backups, safetyRoots.backupRoot);
 
     for (const { target } of targets) {
+        await validatePathWithinRoot(target, safetyRoots.targetRoot, 'a VS Code UI file');
         if (!await pathExists(target)) {
             continue;
         }
 
         await ensureFileReadableWritable(target, 'a VS Code UI file');
         await ensureDirectoryWritable(path.dirname(target), `the directory containing ${describePathForUser(target)}`);
+        await validatePathWithinRoot(target, safetyRoots.targetRoot, 'a VS Code UI file');
     }
 }
 
 export async function preflightRestoreTargets(
     targets: Array<{ target: string; backup: string }>,
-    backupRoot: string,
+    backups: BackupFiles,
+    safetyRoots: PathSafetyRoots,
 ): Promise<void> {
-    await ensureDirectoryWritable(backupRoot, 'backup storage');
+    await validateBackupPaths(backups, safetyRoots.backupRoot);
+    await ensureDirectoryWritable(backups.root, 'backup storage');
+    await validateBackupPaths(backups, safetyRoots.backupRoot);
 
     for (const { target, backup } of targets) {
+        await validatePathWithinRoot(target, safetyRoots.targetRoot, 'a VS Code UI file');
+        await validatePathWithinRoot(backup, safetyRoots.backupRoot, 'a backup file');
         if (!await pathExists(target) || !await pathExists(backup)) {
             continue;
         }
@@ -371,6 +528,8 @@ export async function preflightRestoreTargets(
         await ensureFileReadableWritable(target, 'a VS Code UI file');
         await ensureFileReadableWritable(backup, 'a backup file');
         await ensureDirectoryWritable(path.dirname(target), `the directory containing ${describePathForUser(target)}`);
+        await validatePathWithinRoot(target, safetyRoots.targetRoot, 'a VS Code UI file');
+        await validatePathWithinRoot(backup, safetyRoots.backupRoot, 'a backup file');
     }
 }
 
@@ -393,7 +552,9 @@ export function toUserFacingErrorMessage(error: unknown): string {
 export async function prepareBackupSet(
     backups: BackupFiles,
     currentMetadata: BackupMetadata,
+    safetyRoots: PathSafetyRoots,
 ): Promise<void> {
+    await validateBackupPaths(backups, safetyRoots.backupRoot);
     const existingMetadata = await readBackupMetadata(backups);
     const backupExistence = await Promise.all(getBackupContentPaths(backups).map(pathExists));
     const hasExistingBackups = backupExistence.some(Boolean);
@@ -416,7 +577,7 @@ export async function prepareBackupSet(
         const existingBackupPaths = getBackupContentPaths(backups)
             .filter((_, index) => backupExistence[index]);
         const files = Object.fromEntries(await Promise.all(existingBackupPaths.map(async filePath =>
-            [path.basename(filePath), await getBackupFileMetadata(filePath)] as const,
+            [path.basename(filePath), await getFileMetadata(filePath)] as const,
         )));
         await fs.mkdir(backups.root, { recursive: true });
         await writeJsonAtomically(backups.metadata, {
@@ -439,7 +600,11 @@ export async function prepareBackupSet(
     });
 }
 
-export async function finalizeBackupSet(backups: BackupFiles): Promise<void> {
+export async function finalizeBackupSet(
+    backups: BackupFiles,
+    safetyRoots: PathSafetyRoots,
+): Promise<void> {
+    await validateBackupPaths(backups, safetyRoots.backupRoot);
     const metadata = await readBackupMetadata(backups);
     if (!metadata) {
         throw createBackupIntegrityError();
@@ -483,18 +648,37 @@ function buildPatchedFontFileContent(
     return updatedContent;
 }
 
+function fileMetadataMatches(actual: FileMetadata, expected: FileMetadata): boolean {
+    return actual.size === expected.size && actual.sha256 === expected.sha256;
+}
+
+async function readExpectedTarget(
+    write: PlannedFileWrite,
+    targetRoot: TrustedPathRoot,
+): Promise<string> {
+    await validatePathWithinRoot(write.targetPath, targetRoot, 'a VS Code UI file');
+    const content = await fs.readFile(write.targetPath);
+    await validatePathWithinRoot(write.targetPath, targetRoot, 'a VS Code UI file');
+    if (!fileMetadataMatches(getContentMetadata(content), write.expectedTarget)) {
+        throw new FileVerificationError(
+            `UI Font Changer for VS Code detected that ${describePathForUser(write.targetPath)} changed while the operation was being prepared. Try the command again.`,
+        );
+    }
+    return content.toString('utf-8');
+}
+
 export async function applyWritesTransactionally(
     writes: PlannedFileWrite[],
+    targetRoot: TrustedPathRoot,
     writeText: (filePath: string, content: string) => Promise<void> = writeTextAtomically,
 ): Promise<void> {
-    const originals = new Map<string, string>();
-    await Promise.all(writes.map(async write => {
-        originals.set(write.targetPath, await fs.readFile(write.targetPath, 'utf-8'));
-    }));
+    await Promise.all(writes.map(write => readExpectedTarget(write, targetRoot)));
 
+    const originals = new Map<string, string>();
     const writtenPaths: string[] = [];
     try {
         for (const write of writes) {
+            originals.set(write.targetPath, await readExpectedTarget(write, targetRoot));
             writtenPaths.push(write.targetPath);
             await writeText(write.targetPath, write.content);
         }
@@ -508,6 +692,7 @@ export async function applyWritesTransactionally(
             }
 
             try {
+                await validatePathWithinRoot(targetPath, targetRoot, 'a VS Code UI file');
                 await writeTextAtomically(targetPath, originalContent);
             } catch (rollbackError) {
                 rollbackFailures.push(`${describePathForUser(targetPath)}: ${toUserFacingErrorMessage(rollbackError)}`);
@@ -528,19 +713,25 @@ export async function planFontPatchWrites(
     filesToModify: Array<{ target: string; backup: string }>,
     fontName: string,
     namesToReplace: ReadonlyArray<string>,
+    safetyRoots: PathSafetyRoots,
 ): Promise<PlannedFileWrite[]> {
     const plannedWrites: PlannedFileWrite[] = [];
 
     for (const { target, backup } of filesToModify) {
+        await validatePathWithinRoot(target, safetyRoots.targetRoot, 'a VS Code UI file');
+        await validatePathWithinRoot(backup, safetyRoots.backupRoot, 'a backup file');
         if (!await pathExists(target)) {
             continue;
         }
 
-        await ensureBackup(target, backup);
+        await ensureBackup(target, backup, safetyRoots);
+        await validatePathWithinRoot(backup, safetyRoots.backupRoot, 'a backup file');
         const backupContent = await fs.readFile(backup, 'utf-8');
+        await validatePathWithinRoot(target, safetyRoots.targetRoot, 'a VS Code UI file');
         plannedWrites.push({
             targetPath: target,
             content: buildPatchedFontFileContent(backupContent, fontName, target, namesToReplace),
+            expectedTarget: await getFileMetadata(target),
         });
     }
 
@@ -551,32 +742,45 @@ export async function planMarkdownPatchWrite(
     targetPath: string,
     backupPath: string,
     fontName: string,
+    safetyRoots: PathSafetyRoots,
 ): Promise<PlannedFileWrite | undefined> {
+    await validatePathWithinRoot(targetPath, safetyRoots.targetRoot, 'a VS Code UI file');
+    await validatePathWithinRoot(backupPath, safetyRoots.backupRoot, 'a backup file');
     if (!await pathExists(targetPath)) {
         return undefined;
     }
 
-    await ensureBackup(targetPath, backupPath);
+    await ensureBackup(targetPath, backupPath, safetyRoots);
+    await validatePathWithinRoot(backupPath, safetyRoots.backupRoot, 'a backup file');
     const backupContent = await fs.readFile(backupPath, 'utf-8');
+    await validatePathWithinRoot(targetPath, safetyRoots.targetRoot, 'a VS Code UI file');
     return {
         targetPath,
         content: `${backupContent}\n${buildMarkdownRule(fontName)}`,
+        expectedTarget: await getFileMetadata(targetPath),
     };
 }
 
 export async function planRestoreWrites(
     filesToRestore: Array<{ target: string; backup: string }>,
+    safetyRoots: PathSafetyRoots,
 ): Promise<PlannedFileWrite[]> {
     const plannedWrites: PlannedFileWrite[] = [];
 
     for (const { target, backup } of filesToRestore) {
+        await validatePathWithinRoot(target, safetyRoots.targetRoot, 'a VS Code UI file');
+        await validatePathWithinRoot(backup, safetyRoots.backupRoot, 'a backup file');
         if (!await pathExists(target) || !await pathExists(backup)) {
             continue;
         }
 
+        await validatePathWithinRoot(backup, safetyRoots.backupRoot, 'a backup file');
+        const content = await fs.readFile(backup, 'utf-8');
+        await validatePathWithinRoot(target, safetyRoots.targetRoot, 'a VS Code UI file');
         plannedWrites.push({
             targetPath: target,
-            content: await fs.readFile(backup, 'utf-8'),
+            content,
+            expectedTarget: await getFileMetadata(target),
         });
     }
 
@@ -586,7 +790,9 @@ export async function planRestoreWrites(
 export async function hasRestorableBackupSet(
     backups: BackupFiles,
     currentMetadata: BackupMetadata,
+    safetyRoots: PathSafetyRoots,
 ): Promise<boolean> {
+    await validateBackupPaths(backups, safetyRoots.backupRoot);
     const metadata = await readBackupMetadata(backups);
     if (!metadata
         || (!isBackupMetadataCurrent(metadata, currentMetadata)
@@ -602,17 +808,31 @@ export async function hasRestorableBackupSet(
     return backupExistence.some(Boolean);
 }
 
+export async function hasAnyBackupFiles(
+    backups: BackupFiles,
+    safetyRoots: PathSafetyRoots,
+): Promise<boolean> {
+    await validateBackupPaths(backups, safetyRoots.backupRoot);
+    const backupExistence = await Promise.all(getBackupContentPaths(backups).map(pathExists));
+    return backupExistence.some(Boolean);
+}
+
 export async function detectAppliedMarkdownFont(
     targetPath: string,
     backups: BackupFiles,
     currentMetadata: BackupMetadata,
+    safetyRoots: PathSafetyRoots,
 ): Promise<string | undefined> {
-    if (!await hasRestorableBackupSet(backups, currentMetadata)
+    await validatePathWithinRoot(targetPath, safetyRoots.targetRoot, 'a VS Code UI file');
+    await validatePathWithinRoot(backups.markdownCss, safetyRoots.backupRoot, 'a backup file');
+    if (!await hasRestorableBackupSet(backups, currentMetadata, safetyRoots)
         || !await pathExists(targetPath)
         || !await pathExists(backups.markdownCss)) {
         return undefined;
     }
 
+    await validatePathWithinRoot(targetPath, safetyRoots.targetRoot, 'a VS Code UI file');
+    await validatePathWithinRoot(backups.markdownCss, safetyRoots.backupRoot, 'a backup file');
     const [backupContent, currentContent] = await Promise.all([
         fs.readFile(backups.markdownCss, 'utf-8'),
         fs.readFile(targetPath, 'utf-8'),
@@ -620,8 +840,15 @@ export async function detectAppliedMarkdownFont(
     return detectPatchedMarkdownFont(backupContent, currentContent);
 }
 
-async function ensureBackup(contentPath: string, backupPath: string): Promise<void> {
+async function ensureBackup(
+    contentPath: string,
+    backupPath: string,
+    safetyRoots: PathSafetyRoots,
+): Promise<void> {
     const metadataPath = path.join(path.dirname(backupPath), 'metadata.json');
+    await validatePathWithinRoot(contentPath, safetyRoots.targetRoot, 'a VS Code UI file');
+    await validatePathWithinRoot(backupPath, safetyRoots.backupRoot, 'a backup file');
+    await validatePathWithinRoot(metadataPath, safetyRoots.backupRoot, 'backup metadata');
     const metadata = await readBackupMetadata({ metadata: metadataPath });
     if (!metadata || !metadata.files) {
         throw createBackupIntegrityError();
@@ -652,12 +879,16 @@ async function ensureBackup(contentPath: string, backupPath: string): Promise<vo
     }
 
     await fs.mkdir(path.dirname(backupPath), { recursive: true });
+    await validatePathWithinRoot(contentPath, safetyRoots.targetRoot, 'a VS Code UI file');
+    await validatePathWithinRoot(backupPath, safetyRoots.backupRoot, 'a backup file');
     await fs.copyFile(contentPath, backupPath);
+    await validatePathWithinRoot(backupPath, safetyRoots.backupRoot, 'a backup file');
+    await validatePathWithinRoot(metadataPath, safetyRoots.backupRoot, 'backup metadata');
     await writeJsonAtomically(metadataPath, {
         ...metadata,
         files: {
             ...metadata.files,
-            [fileName]: await getBackupFileMetadata(backupPath),
+            [fileName]: await getFileMetadata(backupPath),
         },
     });
 }
