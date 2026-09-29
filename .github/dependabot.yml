@@ -6,6 +6,12 @@ updates:
     target-branch: "dev"
     schedule:
       interval: "weekly"
+    groups:
+      eslint-toolchain:
+        dependency-type: "development"
+        patterns:
+          - "eslint"
+          - "@typescript-eslint/*"
 
   - package-ecosystem: "github-actions"
     directory: "/"
