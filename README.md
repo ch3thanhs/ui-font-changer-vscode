@@ -9,15 +9,9 @@
 </p>
 
 <p align="center">
-  <a href="https://marketplace.visualstudio.com/items?itemName=ch3thanhs.ui-font-changer-for-vscode">
-    <img src="https://img.shields.io/badge/VS_Code_Marketplace-Get_It_Now-007ACC?style=for-the-badge&logo=visual-studio-code&logoColor=white" alt="VS Code Marketplace">
-  </a>
-  <a href="https://marketplace.visualstudio.com/items?itemName=ch3thanhs.ui-font-changer-for-vscode">
-    <img src="https://vsmarketplacebadges.dev/version/ch3thanhs.ui-font-changer-for-vscode.svg?style=for-the-badge&label=Version" alt="Visual Studio Marketplace Version">
-  </a>
-  <a href="https://marketplace.visualstudio.com/items?itemName=ch3thanhs.ui-font-changer-for-vscode">
-    <img src="https://vsmarketplacebadges.dev/installs/ch3thanhs.ui-font-changer-for-vscode.svg?style=for-the-badge&label=Installs" alt="Visual Studio Marketplace Installs">
-  </a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=ch3thanhs.ui-font-changer-for-vscode"><img src="https://img.shields.io/badge/VS_Code_Marketplace-Get_It_Now-007ACC?style=for-the-badge&logo=visual-studio-code&logoColor=white" alt="VS Code Marketplace"></a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=ch3thanhs.ui-font-changer-for-vscode"><img src="https://vsmarketplacebadges.dev/version/ch3thanhs.ui-font-changer-for-vscode.svg?style=for-the-badge&label=Version" alt="Visual Studio Marketplace Version"></a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=ch3thanhs.ui-font-changer-for-vscode"><img src="https://vsmarketplacebadges.dev/installs/ch3thanhs.ui-font-changer-for-vscode.svg?style=for-the-badge&label=Installs" alt="Visual Studio Marketplace Installs"></a>
 </p>
 
 ## Quick Start
