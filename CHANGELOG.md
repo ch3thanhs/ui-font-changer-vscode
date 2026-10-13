@@ -4,6 +4,12 @@ All notable changes to the "UI Font Changer for VS Code" extension will be docum
 
 This project loosely follows [Keep a Changelog](http://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
 
+## [1.0.7] - 2026-10-14
+
+### Changed
+
+- Refresh README setup, warning, and Marketplace badge documentation.
+
 ## [1.0.6] - 2026-09-29
 
 ### Added
