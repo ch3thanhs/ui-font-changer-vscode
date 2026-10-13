@@ -34,6 +34,7 @@ const MODIFICATION_NOTICE_ACCEPTED_KEY = 'modificationNoticeAccepted';
 const WELCOME_NOTIFICATION_SHOWN_KEY = 'welcomeNotificationShown';
 const MAX_RECENT_FONTS = 5;
 const DOCUMENTATION_URL = 'https://github.com/ch3thanhs/ui-font-changer-vscode#readme';
+const PERMISSION_DOCUMENTATION_URL = 'https://github.com/ch3thanhs/ui-font-changer-vscode/wiki/Permission-recovery';
 
 export function getBuildIdentity(metadata: BackupMetadata): string {
     return [
@@ -75,7 +76,7 @@ async function showUserFacingError(error: unknown): Promise<void> {
         await vscode.env.clipboard.writeText(message);
         await vscode.window.showInformationMessage('Permission instructions copied.');
     } else if (selectedAction === documentationAction) {
-        await vscode.env.openExternal(vscode.Uri.parse(DOCUMENTATION_URL));
+        await vscode.env.openExternal(vscode.Uri.parse(PERMISSION_DOCUMENTATION_URL));
     }
 }
 
