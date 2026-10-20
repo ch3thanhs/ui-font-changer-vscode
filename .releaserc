@@ -1,0 +1,140 @@
+{
+  "branches": [
+    "main",
+    {
+      "name": "dev",
+      "prerelease": true
+    }
+  ],
+  "tagFormat": "v${version}",
+  "plugins": [
+    [
+      "@semantic-release/commit-analyzer",
+      {
+        "preset": "conventionalcommits",
+        "releaseRules": [
+          {
+            "breaking": true,
+            "release": "major"
+          },
+          {
+            "type": "feat",
+            "release": "minor"
+          },
+          {
+            "type": "fix",
+            "release": "patch"
+          },
+          {
+            "type": "perf",
+            "release": "patch"
+          },
+          {
+            "type": "revert",
+            "release": "patch"
+          }
+        ]
+      }
+    ],
+    [
+      "@semantic-release/release-notes-generator",
+      {
+        "preset": "conventionalcommits",
+        "presetConfig": {
+          "types": [
+            {
+              "type": "feat",
+              "section": "✨ Features",
+              "hidden": false
+            },
+            {
+              "type": "fix",
+              "section": "🐛 Bug Fixes",
+              "hidden": false
+            },
+            {
+              "type": "perf",
+              "section": "⚡ Performance",
+              "hidden": false
+            },
+            {
+              "type": "refactor",
+              "section": "♻️ Code Refactoring",
+              "hidden": false
+            },
+            {
+              "type": "docs",
+              "section": "📚 Documentation",
+              "hidden": false
+            },
+            {
+              "type": "chore",
+              "hidden": true
+            },
+            {
+              "type": "ci",
+              "hidden": true
+            },
+            {
+              "type": "test",
+              "hidden": true
+            }
+          ]
+        }
+      }
+    ],
+    [
+      "@semantic-release/changelog",
+      {
+        "changelogFile": "CHANGELOG.md"
+      }
+    ],
+    [
+      "@semantic-release/npm",
+      {
+        "npmPublish": false
+      }
+    ],
+    [
+      "@semantic-release/exec",
+      {
+        "prepareCmd": "npm run check:release-version -- \"v${nextRelease.version}\" && npm run check:vscode-source-font-tokens -- 1.85.0 && xvfb-run -a npm test && npm run check:vscode-bundles && npm run package:vsix -- --out \"ui-font-changer-for-vscode-${nextRelease.version}.vsix\""
+      }
+    ],
+    [
+      "@semantic-release/git",
+      {
+        "assets": [
+          "CHANGELOG.md",
+          "package.json",
+          "package-lock.json"
+        ],
+        "message": "chore: Release v${nextRelease.version} [skip ci]\\n\\n${nextRelease.notes}"
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "assets": [
+          {
+            "path": "ui-font-changer-for-vscode-*.vsix"
+          }
+        ],
+        "successComment": false,
+        "failComment": false
+      }
+    ],
+    [
+      "@cleyrop-org/semantic-release-backmerge",
+      {
+        "backmergeBranches": [
+          {
+            "from": "main",
+            "to": "dev"
+          }
+        ],
+        "clearWorkspace": true
+      }
+    ]
+  ]
+}
