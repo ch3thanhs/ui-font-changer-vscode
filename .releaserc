@@ -98,7 +98,7 @@
     [
       "@semantic-release/exec",
       {
-        "prepareCmd": "npm run check:release-version -- \"v${nextRelease.version}\" && npm run check:vscode-source-font-tokens -- 1.85.0 && xvfb-run -a npm test && npm run check:vscode-bundles && npm run package:vsix -- --out \"ui-font-changer-for-vscode-${nextRelease.version}.vsix\""
+        "prepareCmd": "npm run check:release-version -- \"v${nextRelease.version}\" && npm run check:vscode-engine && npm run check:vscode-source-font-tokens -- stable && xvfb-run -a npm test && npm run check:vscode-bundles && npm run package:vsix -- --out \"ui-font-changer-for-vscode-${nextRelease.version}.vsix\""
       }
     ],
     [
