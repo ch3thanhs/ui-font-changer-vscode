@@ -1,26 +1,66 @@
 name: Release
 
 on:
+  push:
+    branches: [main, dev]
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag to attach the VSIX to (e.g. v0.1.0)"
-        required: true
+        description: "Existing release tag to attach a VSIX to; leave empty to run semantic-release"
+        required: false
         type: string
 
 permissions:
   contents: write
 
 jobs:
-  release:
-    name: Build and attach VSIX to release
+  semantic-release:
+    name: Semantic release
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.tag == '')
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Release
+        uses: cycjimmy/semantic-release-action@v6
+        id: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # CI runs the full compatibility matrix. Keep a local verification here
+      # for commits that do not produce a release.
+      - name: Verify project when no release was published
+        if: steps.release.outputs.new_release_published != 'true'
+        run: |
+          npm run lint
+          npm run compile
+          npm run check:vscode-engine
+          npm run check:vscode-source-font-tokens -- stable
+          xvfb-run -a npm test
+          npm run check:vscode-bundles
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  attach-vsix:
+    name: Build and attach VSIX to an existing release
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+    runs-on: ubuntu-latest
     env:
       RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -28,13 +68,16 @@ jobs:
           ref: ${{ env.RELEASE_TAG }}
 
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Check VS Code engine and API type alignment
+        run: npm run check:vscode-engine
 
       - name: Compile
         run: npm run compile

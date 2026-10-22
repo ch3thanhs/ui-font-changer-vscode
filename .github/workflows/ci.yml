@@ -11,8 +11,8 @@ permissions:
   contents: read
 
 jobs:
-  source-compatibility:
-    name: VS Code 1.85 source compatibility
+  latest-vscode-checks:
+    name: Latest VS Code source compatibility
     runs-on: ubuntu-latest
 
     steps:
@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22
           cache: npm
@@ -28,8 +28,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Check pinned VS Code source tokens
-        run: npm run check:vscode-source-font-tokens -- 1.85.0
+      - name: Check VS Code engine and API type alignment
+        run: npm run check:vscode-engine
+
+      - name: Check latest stable VS Code source tokens
+        run: npm run check:vscode-source-font-tokens -- stable
 
   build:
     name: VS Code ${{ matrix.vscode }} (${{ matrix.os }})
@@ -37,12 +40,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
-            vscode: 1.85.0
-            package: false
-          - os: ubuntu-latest
-            vscode: 1.110.0
-            package: false
           - os: ubuntu-latest
             vscode: stable
             package: true
@@ -59,7 +56,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22
           cache: npm
@@ -90,7 +87,7 @@ jobs:
 
       - name: Upload VSIX artifact
         if: matrix.package
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ui-font-changer-for-vscode-vsix
           path: ui-font-changer-for-vscode.vsix
