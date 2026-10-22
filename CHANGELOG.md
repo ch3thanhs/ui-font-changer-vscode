@@ -4,6 +4,12 @@ All notable changes to the "UI Font Changer for VS Code" extension will be docum
 
 This project loosely follows [Keep a Changelog](http://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
 
+## [1.0.8-dev.2](https://github.com/ch3thanhs/ui-font-changer-vscode/compare/v1.0.8-dev.1...v1.0.8-dev.2) (2026-10-22)
+
+### 🐛 Bug Fixes
+
+* verify semantic-release prerelease with changelog ([735cca3](https://github.com/ch3thanhs/ui-font-changer-vscode/commit/735cca3333626d61cf4596f0c1dd3bdfb7473d0b))
+
 ## [1.0.8-dev.1](https://github.com/ch3thanhs/ui-font-changer-vscode/compare/v1.0.7...v1.0.8-dev.1) (2026-10-22)
 
 ### 🐛 Bug Fixes
