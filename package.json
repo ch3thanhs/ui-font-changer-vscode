@@ -29,7 +29,7 @@
   },
   "homepage": "https://github.com/ch3thanhs/ui-font-changer-vscode#readme",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.143.0"
   },
   "categories": [
     "Other"
