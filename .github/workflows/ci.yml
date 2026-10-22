@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, dev]
+    # Pushes to dev are covered by the dev -> main pull request and by
+    # Dependabot pull requests, so only run the push workflow on main.
+    branches: [main]
   pull_request:
     branches: [main, dev]
   workflow_dispatch:

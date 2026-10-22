@@ -86,7 +86,8 @@
     [
       "@semantic-release/changelog",
       {
-        "changelogFile": "CHANGELOG.md"
+        "changelogFile": "CHANGELOG.md",
+        "changelogTitle": "# Change Log\n\nAll notable changes to the \"UI Font Changer for VS Code\" extension will be documented in this file.\n\nThis project loosely follows [Keep a Changelog](http://keepachangelog.com/) and [Semantic Versioning](https://semver.org/)."
       }
     ],
     [
@@ -109,7 +110,7 @@
           "package.json",
           "package-lock.json"
         ],
-        "message": "chore: Release v${nextRelease.version} [skip ci]\\n\\n${nextRelease.notes}"
+        "message": "chore: Release v${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
       }
     ],
     [
