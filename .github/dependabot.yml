@@ -6,6 +6,12 @@ updates:
     target-branch: "dev"
     schedule:
       interval: "weekly"
+    ignore:
+      # VS Code ships a specific Node.js major with Electron. @types/node must
+      # stay on that major so the extension does not rely on APIs unavailable
+      # in the VS Code runtime.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       eslint-toolchain:
         dependency-type: "development"
