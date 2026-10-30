@@ -15,9 +15,17 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  # Never let two releases (or Marketplace publishes) overlap on the same ref.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   semantic-release:
     name: Semantic release
+    outputs:
+      new_release_published: ${{ steps.release.outputs.new_release_published }}
+      new_release_version: ${{ steps.release.outputs.new_release_version }}
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.tag == '')
     runs-on: ubuntu-latest
     steps:
@@ -107,3 +115,51 @@ jobs:
           gh release upload "${{ env.RELEASE_TAG }}" \
             "ui-font-changer-for-vscode-${{ steps.pkg.outputs.version }}.vsix" \
             --clobber
+
+  publish-marketplace:
+    name: Publish to VS Code Marketplace
+    # Only stable releases from main are published. Marketplace rejects semver
+    # prerelease versions, so dev releases (1.0.8-dev.N) are never published.
+    #
+    # Authentication uses Marketplace trusted publishing (GitHub OIDC) only.
+    # There is intentionally no PAT fallback.
+    needs: semantic-release
+    if: github.ref == 'refs/heads/main' && needs.semantic-release.outputs.new_release_published == 'true'
+    runs-on: ubuntu-latest
+    # Add required reviewers to this environment to gate Marketplace publishes.
+    # The trusted publishing policy can also be scoped to this environment.
+    environment:
+      name: marketplace
+      url: https://marketplace.visualstudio.com/items?itemName=ch3thanhs.ui-font-changer-for-vscode
+    permissions:
+      contents: read
+      # Required to request the GitHub OIDC token that vsce exchanges for a
+      # short-lived Marketplace credential.
+      id-token: write
+    env:
+      RELEASE_TAG: v${{ needs.semantic-release.outputs.new_release_version }}
+      VSIX: ui-font-changer-for-vscode-${{ needs.semantic-release.outputs.new_release_version }}.vsix
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      # Download the exact VSIX that semantic-release built and attached to the
+      # GitHub release, so Marketplace and GitHub always ship the same artifact.
+      - name: Download VSIX from the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern "$VSIX"
+          ls -lh "$VSIX"
+
+      - name: Publish to Visual Studio Marketplace
+        # Keep this vsce version in sync with devDependencies in package.json.
+        # Running it via npx keeps repository dependencies out of the job that
+        # has Marketplace credentials in scope.
+        run: |
+          echo "Publishing $VSIX with GitHub OIDC trusted publishing."
+          npx --yes @vscode/vsce@4.1.0 publish --oidc --skip-duplicate --packagePath "$VSIX"
