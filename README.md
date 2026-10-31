@@ -10,8 +10,14 @@
 
 <p align="center">
   <a href="https://marketplace.visualstudio.com/items?itemName=ch3thanhs.ui-font-changer-for-vscode"><img src="https://img.shields.io/badge/VS_Code_Marketplace-Get_It_Now-007ACC?style=for-the-badge&logo=visual-studio-code&logoColor=white" alt="VS Code Marketplace"></a>
-  <a href="https://marketplace.visualstudio.com/items?itemName=ch3thanhs.ui-font-changer-for-vscode"><img src="https://vsmarketplacebadges.dev/version/ch3thanhs.ui-font-changer-for-vscode.svg?style=for-the-badge&label=Version" alt="Visual Studio Marketplace Version"></a>
-  <a href="https://marketplace.visualstudio.com/items?itemName=ch3thanhs.ui-font-changer-for-vscode"><img src="https://vsmarketplacebadges.dev/installs/ch3thanhs.ui-font-changer-for-vscode.svg?style=for-the-badge&label=Installs" alt="Visual Studio Marketplace Installs"></a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=ch3thanhs.ui-font-changer-for-vscode"><img src="https://vsmarketplacebadges.dev/version/ch3thanhs.ui-font-changer-for-vscode.svg?style=for-the-badge&label=Marketplace%20Version" alt="VS Code Marketplace Version"></a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=ch3thanhs.ui-font-changer-for-vscode"><img src="https://vsmarketplacebadges.dev/installs/ch3thanhs.ui-font-changer-for-vscode.svg?style=for-the-badge&label=Marketplace%20Installs" alt="VS Code Marketplace Installs"></a>
+</p>
+
+<p align="center">
+  <a href="https://open-vsx.org/extension/ch3thanhs/ui-font-changer-for-vscode"><img src="https://img.shields.io/badge/Open_VSX-Get_It_Now-2C2255?style=for-the-badge" alt="Open VSX"></a>
+  <a href="https://open-vsx.org/extension/ch3thanhs/ui-font-changer-for-vscode"><img src="https://img.shields.io/open-vsx/v/ch3thanhs/ui-font-changer-for-vscode?style=for-the-badge&label=Open%20VSX%20Version&color=4b0" alt="Open VSX Version"></a>
+  <a href="https://open-vsx.org/extension/ch3thanhs/ui-font-changer-for-vscode"><img src="https://img.shields.io/open-vsx/dt/ch3thanhs/ui-font-changer-for-vscode?style=for-the-badge&label=Open%20VSX%20Downloads&color=4b0" alt="Open VSX Downloads"></a>
 </p>
 
 ## Quick Start
