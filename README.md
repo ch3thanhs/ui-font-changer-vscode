@@ -16,8 +16,8 @@
 
 <p align="center">
   <a href="https://open-vsx.org/extension/ch3thanhs/ui-font-changer-for-vscode"><img src="https://img.shields.io/badge/Open_VSX-Get_It_Now-2C2255?style=for-the-badge" alt="Open VSX"></a>
-  <a href="https://open-vsx.org/extension/ch3thanhs/ui-font-changer-for-vscode"><img src="https://img.shields.io/open-vsx/v/ch3thanhs/ui-font-changer-for-vscode?style=for-the-badge&label=Open%20VSX%20Version" alt="Open VSX Version"></a>
-  <a href="https://open-vsx.org/extension/ch3thanhs/ui-font-changer-for-vscode"><img src="https://img.shields.io/open-vsx/dt/ch3thanhs/ui-font-changer-for-vscode?style=for-the-badge&label=Open%20VSX%20Downloads" alt="Open VSX Downloads"></a>
+  <a href="https://open-vsx.org/extension/ch3thanhs/ui-font-changer-for-vscode"><img src="https://img.shields.io/open-vsx/v/ch3thanhs/ui-font-changer-for-vscode?style=for-the-badge&label=Open%20VSX%20Version&color=4b0" alt="Open VSX Version"></a>
+  <a href="https://open-vsx.org/extension/ch3thanhs/ui-font-changer-for-vscode"><img src="https://img.shields.io/open-vsx/dt/ch3thanhs/ui-font-changer-for-vscode?style=for-the-badge&label=Open%20VSX%20Downloads&color=4b0" alt="Open VSX Downloads"></a>
 </p>
 
 ## Quick Start
