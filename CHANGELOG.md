@@ -4,6 +4,17 @@ All notable changes to the "UI Font Changer for VS Code" extension will be docum
 
 This project loosely follows [Keep a Changelog](http://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
 
+## [1.0.9-dev.1](https://github.com/ch3thanhs/ui-font-changer-vscode/compare/v1.0.8...v1.0.9-dev.1) (2026-11-27)
+
+### 🐛 Bug Fixes
+
+* include the updated README in the release ([d9170f5](https://github.com/ch3thanhs/ui-font-changer-vscode/commit/d9170f5ecc53c6e6a06f629ec17e527459a2edff))
+
+### 📚 Documentation
+
+* add Open VSX badges to README ([277b51d](https://github.com/ch3thanhs/ui-font-changer-vscode/commit/277b51dc1ae743becc2768f635fd592b8fc49506))
+* match Open VSX badge colors to Marketplace green ([6ae0438](https://github.com/ch3thanhs/ui-font-changer-vscode/commit/6ae0438eb273c71ae7a99a7788dd8505f869fa4e)), closes [#4b0](https://github.com/ch3thanhs/ui-font-changer-vscode/issues/4b0)
+
 ## [1.0.8](https://github.com/ch3thanhs/ui-font-changer-vscode/compare/v1.0.7...v1.0.8) (2026-10-30)
 
 ### 🐛 Bug Fixes
